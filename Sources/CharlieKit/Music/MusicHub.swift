@@ -59,7 +59,7 @@ public final class MusicHub: ObservableObject {
 
     private func poll() {
         let result = SpotifyController.fetch()
-        if ProcessInfo.processInfo.environment["NOTCHLING_MUSIC_DEBUG"] != nil {
+        if ProcessInfo.processInfo.environment["CHARLIE_MUSIC_DEBUG"] != nil {
             FileHandle.standardError.write(Data("music fetch=\(result) enabled=\(enabled)\n".utf8))
         }
         switch result {

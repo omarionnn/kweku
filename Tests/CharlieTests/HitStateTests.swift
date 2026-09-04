@@ -1,4 +1,4 @@
-import NotchlingKit
+import CharlieKit
 
 enum HitStateTests {
     static func all() {

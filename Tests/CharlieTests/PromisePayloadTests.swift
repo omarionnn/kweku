@@ -1,12 +1,12 @@
 import Foundation
-import NotchlingKit
+import CharlieKit
 
 /// End-to-end drag-out materialisation: the half that's easy to forget. Uses a
 /// real temp directory (the runner is an executable, not sandboxed XCTest).
 enum PromisePayloadTests {
     static func all() {
         let tmp = FileManager.default.temporaryDirectory
-            .appendingPathComponent("notchling-tests-\(UUID().uuidString)")
+            .appendingPathComponent("charlie-tests-\(UUID().uuidString)")
         try? FileManager.default.createDirectory(at: tmp, withIntermediateDirectories: true)
         defer { try? FileManager.default.removeItem(at: tmp) }
 

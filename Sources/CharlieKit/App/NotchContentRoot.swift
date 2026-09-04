@@ -102,6 +102,6 @@ struct NotchContentRoot: View {
         Divider()
         Button("Enter licence key…") {}.disabled(true)
         Divider()
-        Button("Quit Notchling") { NSApp.terminate(nil) }
+        Button("Quit Charlie") { NSApp.terminate(nil) }
     }
 }

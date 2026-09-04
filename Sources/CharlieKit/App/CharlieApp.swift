@@ -3,7 +3,7 @@ import SwiftUI
 
 /// Process entry point. Runs as an accessory (`LSUIElement`) app: no Dock
 /// icon, no menu bar item — the notch is the entire UI.
-public enum NotchlingApp {
+public enum CharlieApp {
     public static func main() {
         let app = NSApplication.shared
         app.setActivationPolicy(.accessory)

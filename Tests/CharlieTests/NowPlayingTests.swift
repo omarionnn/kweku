@@ -1,5 +1,5 @@
 import Foundation
-import NotchlingKit
+import CharlieKit
 
 enum NowPlayingTests {
     static func all() {

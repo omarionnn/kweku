@@ -1,4 +1,4 @@
-// Pure-logic test runner. `make test` => `swift run NotchlingTests`.
+// Pure-logic test runner. `make test` => `swift run CharlieTests`.
 print("NotchGeometry")
 NotchGeometryTests.all()
 print("\nHitState")

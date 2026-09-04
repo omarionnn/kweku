@@ -1,5 +1,5 @@
 import CoreGraphics
-import NotchlingKit
+import CharlieKit
 
 enum NotchGeometryTests {
     static func all() {

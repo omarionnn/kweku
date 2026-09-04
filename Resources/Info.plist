@@ -3,13 +3,13 @@
 <plist version="1.0">
 <dict>
 	<key>CFBundleName</key>
-	<string>Notchling</string>
+	<string>Charlie</string>
 	<key>CFBundleDisplayName</key>
-	<string>Notchling</string>
+	<string>Charlie</string>
 	<key>CFBundleIdentifier</key>
-	<string>com.notchling.app</string>
+	<string>com.charlie.app</string>
 	<key>CFBundleExecutable</key>
-	<string>Notchling</string>
+	<string>Charlie</string>
 	<key>CFBundlePackageType</key>
 	<string>APPL</string>
 	<key>CFBundleShortVersionString</key>
@@ -27,6 +27,6 @@
 	<key>NSSupportsAutomaticGraphicsSwitching</key>
 	<true/>
 	<key>NSAppleEventsUsageDescription</key>
-	<string>Notchling shows and controls Spotify playback in the notch when you enable Music mode.</string>
+	<string>Charlie shows and controls Spotify playback in the notch when you enable Music mode.</string>
 </dict>
 </plist>

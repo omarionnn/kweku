@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Developer ID signing + notarization + stapling for the Notchling .app bundle.
+# Developer ID signing + notarization + stapling for the Charlie .app bundle.
 #
 # Run every phase boundary (working agreement). Requires:
 #   DEVELOPER_ID_APP   e.g. "Developer ID Application: Your Name (TEAMID)"
@@ -9,8 +9,8 @@
 # We deliberately never pipe curl|bash or otherwise dodge Gatekeeper.
 set -euo pipefail
 
-APPDIR="${1:-build/Notchling.app}"
-ENTITLEMENTS="Resources/Notchling.entitlements"
+APPDIR="${1:-build/Charlie.app}"
+ENTITLEMENTS="Resources/Charlie.entitlements"
 
 if [[ ! -d "$APPDIR" ]]; then
   echo "error: app bundle not found at $APPDIR (run: make app)" >&2
@@ -25,9 +25,9 @@ This environment has no Developer ID identity, so notarization cannot run here.
 To notarize on a machine that does, set:
 
   export DEVELOPER_ID_APP="Developer ID Application: NAME (TEAMID)"
-  export NOTARY_PROFILE="notchling"     # from `xcrun notarytool store-credentials`
+  export NOTARY_PROFILE="charlie"     # from `xcrun notarytool store-credentials`
 
-then re-run: ./notarize.sh build/Notchling.app
+then re-run: ./notarize.sh build/Charlie.app
 EOF
   exit 2
 fi

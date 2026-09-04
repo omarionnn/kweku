@@ -1,8 +1,8 @@
-APP     := Notchling
+APP     := Charlie
 SDK      = $(shell xcrun --show-sdk-path)
 DEPLOY  := 13.0
-KIT     := $(shell find Sources/NotchlingKit -name '*.swift')
-MAIN    := Sources/Notchling/main.swift
+KIT     := $(shell find Sources/CharlieKit -name '*.swift')
+MAIN    := Sources/Charlie/main.swift
 ARCHES  := arm64 x86_64
 
 APPDIR  := build/$(APP).app
@@ -23,12 +23,12 @@ build:
 	  echo "==> compiling $$arch"; \
 	  odir=build/obj/$$arch; mkdir -p $$odir; \
 	  swiftc -sdk "$(SDK)" -target $$arch-apple-macos$(DEPLOY) -Osize -wmo \
-	    -parse-as-library -module-name NotchlingKit \
-	    -emit-module -emit-module-path $$odir/NotchlingKit.swiftmodule \
-	    -c -o $$odir/NotchlingKit.o $(KIT) || exit 1; \
+	    -parse-as-library -module-name CharlieKit \
+	    -emit-module -emit-module-path $$odir/CharlieKit.swiftmodule \
+	    -c -o $$odir/CharlieKit.o $(KIT) || exit 1; \
 	  swiftc -sdk "$(SDK)" -target $$arch-apple-macos$(DEPLOY) -Osize \
-	    -I $$odir -module-name Notchling \
-	    $$odir/NotchlingKit.o $(MAIN) -o $$odir/$(APP) || exit 1; \
+	    -I $$odir -module-name Charlie \
+	    $$odir/CharlieKit.o $(MAIN) -o $$odir/$(APP) || exit 1; \
 	done
 	@lipo -create -output build/universal/$(APP) \
 	  $(foreach a,$(ARCHES),build/obj/$(a)/$(APP))
@@ -36,7 +36,7 @@ build:
 
 ## Run the pure-logic tests (geometry + hit-state) via SwiftPM.
 test:
-	swift run NotchlingTests
+	swift run CharlieTests
 
 ## Assemble a runnable .app bundle and ad-hoc sign it for local testing.
 ## Real distribution signing/notarization lives in notarize.sh (needs a

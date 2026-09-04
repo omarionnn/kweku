@@ -1,5 +1,5 @@
 import CoreGraphics
-import NotchlingKit
+import CharlieKit
 
 enum CreatureGazeTests {
     static func all() {

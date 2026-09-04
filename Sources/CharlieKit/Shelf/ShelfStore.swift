@@ -19,7 +19,13 @@ public final class ShelfStore: ObservableObject {
     private static var supportDir: URL {
         let base = FileManager.default.urls(for: .applicationSupportDirectory,
                                             in: .userDomainMask)[0]
-        let dir = base.appendingPathComponent("Notchling", isDirectory: true)
+        let dir = base.appendingPathComponent("Charlie", isDirectory: true)
+        // One-time migration from the pre-rebrand data directory.
+        let legacy = base.appendingPathComponent("Notchling", isDirectory: true)
+        if !FileManager.default.fileExists(atPath: dir.path),
+           FileManager.default.fileExists(atPath: legacy.path) {
+            try? FileManager.default.moveItem(at: legacy, to: dir)
+        }
         try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
         return dir
     }

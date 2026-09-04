@@ -1,28 +1,28 @@
 // swift-tools-version:5.9
 import PackageDescription
 
-// Single logical app. `NotchlingKit` holds all source modules (as directories);
-// `Notchling` is a thin executable shim so the pure logic stays unit-testable.
+// Single logical app. `CharlieKit` holds all source modules (as directories);
+// `Charlie` is a thin executable shim so the pure logic stays unit-testable.
 let package = Package(
-    name: "Notchling",
+    name: "Charlie",
     platforms: [.macOS(.v13)],
     products: [
-        .executable(name: "Notchling", targets: ["Notchling"]),
-        .executable(name: "NotchlingTests", targets: ["NotchlingTests"]),
+        .executable(name: "Charlie", targets: ["Charlie"]),
+        .executable(name: "CharlieTests", targets: ["CharlieTests"]),
     ],
     targets: [
-        .target(name: "NotchlingKit"),
+        .target(name: "CharlieKit"),
         .executableTarget(
-            name: "Notchling",
-            dependencies: ["NotchlingKit"]
+            name: "Charlie",
+            dependencies: ["CharlieKit"]
         ),
         // XCTest is unavailable with Command Line Tools only, and the project
         // forbids third-party deps, so pure-logic tests run as a tiny
-        // self-contained executable (`swift run NotchlingTests`).
+        // self-contained executable (`swift run CharlieTests`).
         .executableTarget(
-            name: "NotchlingTests",
-            dependencies: ["NotchlingKit"],
-            path: "Tests/NotchlingTests"
+            name: "CharlieTests",
+            dependencies: ["CharlieKit"],
+            path: "Tests/CharlieTests"
         ),
     ]
 )

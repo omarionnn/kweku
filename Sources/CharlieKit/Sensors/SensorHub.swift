@@ -13,7 +13,7 @@ public final class SensorHub: ObservableObject {
     @Published public private(set) var snapshot = SensorSnapshot()
 
     private let pathMonitor = NWPathMonitor()
-    private let pathQueue = DispatchQueue(label: "com.notchling.network")
+    private let pathQueue = DispatchQueue(label: "com.charlie.network")
     private var timer: Timer?
     private var cancellables: Set<AnyCancellable> = []
 
@@ -54,7 +54,7 @@ public final class SensorHub: ObservableObject {
         s.diskFreeBytes = SystemSensors.diskFreeBytes()
         s.capsLock = NSEvent.modifierFlags.contains(.capsLock)
         if s != snapshot { snapshot = s }
-        if ProcessInfo.processInfo.environment["NOTCHLING_SENSOR_DEBUG"] != nil {
+        if ProcessInfo.processInfo.environment["CHARLIE_SENSOR_DEBUG"] != nil {
             FileHandle.standardError.write(Data(
                 "sensors charging=\(s.charging) batt=\(String(format: "%.2f", s.batteryFraction)) cam=\(s.cameraActive) mic=\(s.micActive) caps=\(s.capsLock) offline=\(s.offline) diskGB=\(s.diskFreeBytes / 1_000_000_000)\n".utf8))
         }

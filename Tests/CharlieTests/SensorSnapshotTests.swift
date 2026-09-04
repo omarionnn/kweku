@@ -1,4 +1,4 @@
-import NotchlingKit
+import CharlieKit
 
 enum SensorSnapshotTests {
     static func all() {

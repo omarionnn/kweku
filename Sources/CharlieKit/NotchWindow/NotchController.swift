@@ -44,7 +44,7 @@ public final class NotchController {
                     guard let self, !self.creatureDragging else { return }
                     // NOTE: @Published emits on *willSet* — the property still
                     // holds the old value here, so we must use the payload.
-                    self.applyWindowSize(desired: size, resetToHome: false)
+                    self.applyWindowSize(desired: size)
                 }
             }
             .store(in: &cancellables)
@@ -72,13 +72,16 @@ public final class NotchController {
         model.notchSize = resolved.notchRect.size
         model.isSynthetic = resolved.isSynthetic
         cancelSpring()
-        applyWindowSize(resetToHome: true)
+        applyWindowSize()
     }
 
-    /// Size the window to the content's desired size, pinned to the notch's top
-    /// edge. `resetToHome` re-centres x; otherwise x is preserved (a slide).
-    private func applyWindowSize(desired: CGSize? = nil, resetToHome: Bool) {
+    /// Size the window to the content's desired size, pinned to the notch's
+    /// top edge and ALWAYS centred on the notch. (Creature slides bypass this
+    /// path entirely — the sink is gated while dragging and release springs
+    /// home — so unconditional recentering makes drift impossible.)
+    private func applyWindowSize(desired: CGSize? = nil) {
         guard let layout else { return }
+        cancelSpring()   // a resize supersedes any in-flight slide-home
         let base = layout.notchRect
         let scr = NotchScreenReader.preferredScreen()?.frame ?? base
         let want = desired ?? model.desiredSize
@@ -86,11 +89,8 @@ public final class NotchController {
 
         let width = min(target.width, scr.width - 12)
         let height = max(target.height, base.height)
-        let homeX = base.midX - width / 2
-        // Preserve the window's *centre* (not its left edge) so width changes
-        // grow symmetrically around the notch instead of rightward.
-        let unclamped = resetToHome ? homeX : window.frame.midX - width / 2
-        let originX = clamp(unclamped, minX: scr.minX + 6, maxX: scr.maxX - width - 6)
+        let originX = clamp(base.midX - width / 2,
+                            minX: scr.minX + 6, maxX: scr.maxX - width - 6)
         let rect = CGRect(x: originX, y: base.maxY - height, width: width, height: height)
         window.setFrame(rect, display: true)
         publishCenter()
@@ -203,7 +203,7 @@ public final class NotchController {
         window.ignoresMouseEvents = machine.ignoresMouseEvents
         model.isHovering = machine.state == .hovering
         model.expanded = machine.state == .dragArmed
-        applyWindowSize(resetToHome: false)
+        applyWindowSize()
     }
 
     // MARK: - Spring home

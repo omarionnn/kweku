@@ -189,6 +189,8 @@ public final class NotchController {
             scheduleSpringHome()
         } else if machine.state == .dragArmed {
             if machine.dragEnded(insideNow: cursorInsideNotch()) { applyState() }
+        } else if mouseDownInside, cursorInsideNotch() {
+            model.tapCount += 1     // plain click on the content
         }
         mouseDownInside = false
     }

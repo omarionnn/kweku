@@ -34,6 +34,8 @@ public final class NotchViewModel: ObservableObject {
     /// Whether the hosted content wants the sideways window-drag gesture
     /// (creature: yes; music island with scrubber/buttons: no).
     @Published public var contentDraggable: Bool = true
+    /// Incremented on a plain click (down+up, no drag) inside the content.
+    @Published public var tapCount: Int = 0
 
     // MARK: Layout (content -> window)
 

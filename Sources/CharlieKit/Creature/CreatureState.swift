@@ -34,6 +34,12 @@ public final class CreatureState: ObservableObject {
     /// Mic in use → periodic ear twitch (0…1 twitch phase).
     @Published public private(set) var earTwitch: CGFloat = 0
 
+    // MARK: Agent-watch reactions
+    /// Any coding-agent session working → amber ember pulse.
+    @Published public private(set) var agentWorking = false
+    /// Any session waiting on the user → periodic downward glance.
+    @Published public private(set) var agentWaiting = false
+
     // Idle thresholds (seconds of no nearby input).
     private let drowsyAfter: TimeInterval = 45
     private let asleepAfter: TimeInterval = 150
@@ -47,6 +53,7 @@ public final class CreatureState: ObservableObject {
     private var saccadeWork: DispatchWorkItem?
     private var yawnWork: DispatchWorkItem?
     private var twitchWork: DispatchWorkItem?
+    private var glanceWork: DispatchWorkItem?
     private var micActive = false
     private var lowBattery = false
     private var lastCursorMove: Date = .distantPast
@@ -77,9 +84,33 @@ public final class CreatureState: ObservableObject {
 
     deinit {
         blinkWork?.cancel(); drowsyWork?.cancel(); asleepWork?.cancel()
-        saccadeWork?.cancel(); yawnWork?.cancel(); twitchWork?.cancel()
+        saccadeWork?.cancel(); yawnWork?.cancel(); twitchWork?.cancel(); glanceWork?.cancel()
     }
 
+
+    // MARK: - Agent-watch reactions
+
+    /// Update from the agent session table. Waiting triggers a downward
+    /// glance immediately and re-glances periodically until resolved.
+    public func setAgents(working: Bool, waiting: Bool) {
+        if working != agentWorking { agentWorking = working }
+        if waiting != agentWaiting {
+            agentWaiting = waiting
+            if waiting { glanceDown() } else { glanceWork?.cancel(); glanceWork = nil }
+        }
+    }
+
+    private func glanceDown() {
+        guard agentWaiting, mood != .asleep else { return }
+        withAnimation(.easeInOut(duration: 0.3)) {
+            gaze = CGSize(width: 0, height: 0.9)   // look down at the "sessions"
+        }
+        let work = DispatchWorkItem { [weak self] in
+            MainActor.assumeIsolated { self?.glanceDown() }
+        }
+        glanceWork = work
+        DispatchQueue.main.asyncAfter(deadline: .now() + 7, execute: work)
+    }
     // MARK: - Sensor reactions
 
     /// Apply a fresh sensor reading. Advisory visuals only.

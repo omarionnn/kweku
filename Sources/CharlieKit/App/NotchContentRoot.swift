@@ -11,6 +11,7 @@ struct NotchContentRoot: View {
     @StateObject private var shelf = ShelfStore()
     @StateObject private var sensors: SensorHub
     @StateObject private var music = MusicHub()
+    @StateObject private var agents = AgentWatchHub()
 
     @State private var isTargeted = false
     @State private var hidden = false
@@ -57,6 +58,12 @@ struct NotchContentRoot: View {
         .onChange(of: music.now) { _ in syncDraggable(); updateSize() }
         .onChange(of: music.enabled) { _ in syncDraggable(); updateSize() }
         .onChange(of: sensors.snapshot) { creature.apply($0) }
+        .onChange(of: agents.table) { _ in
+            creature.setAgents(working: agents.anyWorking, waiting: agents.anyWaiting)
+        }
+        .onChange(of: vm.tapCount) { _ in
+            if !music.isShowing { agents.focusCurrent() }
+        }
         .onAppear { syncDraggable(); updateSize(); creature.apply(sensors.snapshot) }
         .contextMenu { menu }
     }
@@ -99,6 +106,10 @@ struct NotchContentRoot: View {
             Label("Music — Spotify", systemImage: music.enabled ? "checkmark" : "")
         }
         Button(hidden ? "Show" : "Hide") { hidden.toggle() }
+        Divider()
+        Button(action: { agents.runSetup() }) {
+            Label("Set Up Agent Watch", systemImage: agents.setupDone ? "checkmark" : "")
+        }
         Divider()
         Button("Enter licence key…") {}.disabled(true)
         Divider()

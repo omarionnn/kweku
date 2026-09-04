@@ -10,6 +10,9 @@ struct CreatureView: View {
     @ObservedObject var vm: NotchViewModel
     @State private var breathe = false
 
+    @State private var emberPulse = false
+
+    /// Height of the face band that hangs below the notch cutout.
     static let peek: CGFloat = 30
 
     var body: some View {
@@ -48,6 +51,25 @@ struct CreatureView: View {
     private func face(eyeW: CGFloat, eyeH: CGFloat, pupilR: CGFloat, travel: CGFloat,
                       eyeDX: CGFloat, eyeCY: CGFloat) -> some View {
         ZStack {
+            // Amber ember: pulses while any coding-agent session is working.
+            if state.agentWorking {
+                Circle()
+                    .fill(RadialGradient(
+                        colors: [Color(red: 1.0, green: 0.68, blue: 0.25).opacity(0.85),
+                                 Color(red: 1.0, green: 0.5, blue: 0.1).opacity(0)],
+                        center: .center, startRadius: 0, endRadius: 11))
+                    .frame(width: 22, height: 22)
+                    .scaleEffect(emberPulse ? 1.25 : 0.8)
+                    .opacity(emberPulse ? 1.0 : 0.55)
+                    .offset(y: eyeCY + eyeH * 0.85)
+                    .onAppear {
+                        emberPulse = false
+                        withAnimation(.easeInOut(duration: 0.9).repeatForever(autoreverses: true)) {
+                            emberPulse = true
+                        }
+                    }
+                    .transition(.opacity)
+            }
             ear().offset(x: -eyeDX, y: -8).rotationEffect(.degrees(-state.earTwitch * 16), anchor: .bottom)
             ear().offset(x: eyeDX, y: -8).rotationEffect(.degrees(state.earTwitch * 16), anchor: .bottom)
 

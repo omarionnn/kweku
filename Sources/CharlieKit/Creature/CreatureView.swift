@@ -43,6 +43,7 @@ struct CreatureView: View {
         .animation(.easeInOut(duration: 0.25), value: state.charging)
         .animation(.easeInOut(duration: 0.25), value: state.capsLock)
         .animation(.spring(response: 0.34, dampingFraction: 0.72), value: state.cameraActive)
+        .animation(.spring(response: 0.3, dampingFraction: 0.55), value: state.agentWaiting)
         .onAppear {
             withAnimation(.easeInOut(duration: 2.6).repeatForever(autoreverses: true)) { breathe = true }
         }
@@ -81,10 +82,18 @@ struct CreatureView: View {
             brow(eyeW: eyeW).offset(x: eyeDX, y: eyeCY - eyeH / 2 - (state.capsLock ? 5 : 2.5))
                 .opacity(state.capsLock ? 1 : 0)
 
-            eye(eyeW: eyeW, eyeH: eyeH, pupilR: pupilR, travel: travel, open: state.eyeOpenAmount)
-                .offset(x: -eyeDX, y: eyeCY)
-            eye(eyeW: eyeW, eyeH: eyeH, pupilR: pupilR, travel: travel, open: state.eyeOpenAmount)
-                .offset(x: eyeDX, y: eyeCY)
+            // Eyes — become exclamation marks while an agent waits on the user.
+            if state.agentWaiting {
+                exclaim(eyeH: eyeH).offset(x: -eyeDX, y: eyeCY)
+                    .transition(.scale.combined(with: .opacity))
+                exclaim(eyeH: eyeH).offset(x: eyeDX, y: eyeCY)
+                    .transition(.scale.combined(with: .opacity))
+            } else {
+                eye(eyeW: eyeW, eyeH: eyeH, pupilR: pupilR, travel: travel, open: state.eyeOpenAmount)
+                    .offset(x: -eyeDX, y: eyeCY)
+                eye(eyeW: eyeW, eyeH: eyeH, pupilR: pupilR, travel: travel, open: state.eyeOpenAmount)
+                    .offset(x: eyeDX, y: eyeCY)
+            }
 
             if state.cameraActive {
                 shades(eyeW: eyeW, eyeH: eyeH, eyeDX: eyeDX, eyeCY: eyeCY)
@@ -100,6 +109,17 @@ struct CreatureView: View {
 
     private func ear() -> some View {
         RoundedRectangle(cornerRadius: 2).fill(Color.white.opacity(0.16)).frame(width: 6, height: 8)
+    }
+
+    /// An exclamation mark sized like an eye: bar + dot, in eye-white.
+    private func exclaim(eyeH: CGFloat) -> some View {
+        VStack(spacing: 2) {
+            Capsule().fill(Color.white.opacity(0.95))
+                .frame(width: 3.6, height: eyeH * 0.62)
+            Circle().fill(Color.white.opacity(0.95))
+                .frame(width: 3.6, height: 3.6)
+        }
+        .frame(height: eyeH)
     }
     private func cheek() -> some View {
         Circle()

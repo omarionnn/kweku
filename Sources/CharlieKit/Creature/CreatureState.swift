@@ -53,7 +53,6 @@ public final class CreatureState: ObservableObject {
     private var saccadeWork: DispatchWorkItem?
     private var yawnWork: DispatchWorkItem?
     private var twitchWork: DispatchWorkItem?
-    private var glanceWork: DispatchWorkItem?
     private var micActive = false
     private var lowBattery = false
     private var lastCursorMove: Date = .distantPast
@@ -84,33 +83,26 @@ public final class CreatureState: ObservableObject {
 
     deinit {
         blinkWork?.cancel(); drowsyWork?.cancel(); asleepWork?.cancel()
-        saccadeWork?.cancel(); yawnWork?.cancel(); twitchWork?.cancel(); glanceWork?.cancel()
+        saccadeWork?.cancel(); yawnWork?.cancel(); twitchWork?.cancel()
     }
 
 
     // MARK: - Agent-watch reactions
 
-    /// Update from the agent session table. Waiting triggers a downward
-    /// glance immediately and re-glances periodically until resolved.
+    /// Update from the agent session table. While any session waits on the
+    /// user, the eyes render as exclamation marks (see `CreatureView`); the
+    /// flip gets a wake + pop so it's noticed.
     public func setAgents(working: Bool, waiting: Bool) {
         if working != agentWorking { agentWorking = working }
         if waiting != agentWaiting {
             agentWaiting = waiting
-            if waiting { glanceDown() } else { glanceWork?.cancel(); glanceWork = nil }
+            if waiting {
+                registerInput()   // wake if drowsy/asleep
+                pop()
+            }
         }
     }
 
-    private func glanceDown() {
-        guard agentWaiting, mood != .asleep else { return }
-        withAnimation(.easeInOut(duration: 0.3)) {
-            gaze = CGSize(width: 0, height: 0.9)   // look down at the "sessions"
-        }
-        let work = DispatchWorkItem { [weak self] in
-            MainActor.assumeIsolated { self?.glanceDown() }
-        }
-        glanceWork = work
-        DispatchQueue.main.asyncAfter(deadline: .now() + 7, execute: work)
-    }
     // MARK: - Sensor reactions
 
     /// Apply a fresh sensor reading. Advisory visuals only.

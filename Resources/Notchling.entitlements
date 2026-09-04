@@ -1,0 +1,15 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<!-- Hardened Runtime baseline for notarization. App Sandbox is intentionally
+	     off for v1: security-scoped bookmarks (Phase 3), the agent Unix socket
+	     (Phase 5) and process-tree walking (Phase 5) need a non-sandboxed home.
+	     Revisit if a sandboxed profile becomes viable. -->
+	<key>com.apple.security.cs.allow-jit</key>
+	<false/>
+	<!-- Sending Apple Events to Spotify (Music mode, opt-in). -->
+	<key>com.apple.security.automation.apple-events</key>
+	<true/>
+</dict>
+</plist>

@@ -18,6 +18,7 @@ struct NotchContentRoot: View {
     @StateObject private var music = MusicHub()
     @StateObject private var agents = AgentWatchHub()
     @StateObject private var weather = WeatherHub()
+    @StateObject private var live = LiveSessionController()
 
     @State private var isTargeted = false
     @State private var hidden = false
@@ -80,9 +81,11 @@ struct NotchContentRoot: View {
             weather.setActive(m == .weather)
             updateSize()
         }
+        .onReceive(live.audio.$currentSpeakerAmplitude) { creature.setVoice(level: $0) }
         .onAppear {
             syncDraggable(); updateSize(); creature.apply(sensors.snapshot)
             if mode == .weather { weather.setActive(true) }
+            live.ompCwdProvider = { agents.table.focusTarget()?.cwd }
         }
         .contextMenu { menu }
     }
@@ -143,6 +146,27 @@ struct NotchContentRoot: View {
         Task { await weather.setManualCity(name) }
     }
 
+    private func startLive() {
+        if LiveSessionController.apiKey == nil { promptForGeminiKey() }
+        guard LiveSessionController.apiKey != nil else { return }
+        live.start()
+    }
+
+    private func promptForGeminiKey() {
+        let alert = NSAlert()
+        alert.messageText = "Gemini API key"
+        alert.informativeText = "Used only for Charlie Live (voice + screen). Stored in app preferences."
+        let field = NSSecureTextField(frame: NSRect(x: 0, y: 0, width: 260, height: 24))
+        field.placeholderString = "AIza…"
+        alert.accessoryView = field
+        alert.addButton(withTitle: "Save")
+        alert.addButton(withTitle: "Cancel")
+        NSApp.activate(ignoringOtherApps: true)
+        guard alert.runModal() == .alertFirstButtonReturn else { return }
+        let key = field.stringValue.trimmingCharacters(in: .whitespaces)
+        if !key.isEmpty { LiveSessionController.storeAPIKey(key) }
+    }
+
     @ViewBuilder private var menu: some View {
         Button(action: { mode = .critter }) {
             Label("Critter", systemImage: mode == .critter ? "checkmark" : "")
@@ -157,6 +181,13 @@ struct NotchContentRoot: View {
             Label("Music — Spotify", systemImage: music.enabled ? "checkmark" : "")
         }
         Button(hidden ? "Show" : "Hide") { hidden.toggle() }
+        Divider()
+        if live.running {
+            Button("Stop Charlie Live") { live.stop() }
+        } else {
+            Button("Start Charlie Live") { startLive() }
+        }
+        Button("Set Gemini API Key…") { promptForGeminiKey() }
         Divider()
         Button(action: { agents.runSetup() }) {
             Label("Set Up Agent Watch", systemImage: agents.setupDone ? "checkmark" : "")

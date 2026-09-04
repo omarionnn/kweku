@@ -32,5 +32,7 @@
 	<string>Charlie uses your approximate location to show local weather in the notch.</string>
 	<key>NSLocationWhenInUseUsageDescription</key>
 	<string>Charlie uses your approximate location to show local weather in the notch.</string>
+	<key>NSMicrophoneUsageDescription</key>
+	<string>Charlie Live uses the microphone so you can talk to Charlie.</string>
 </dict>
 </plist>

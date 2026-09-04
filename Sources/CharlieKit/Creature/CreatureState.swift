@@ -39,6 +39,8 @@ public final class CreatureState: ObservableObject {
     @Published public private(set) var agentWorking = false
     /// Any session waiting on the user → periodic downward glance.
     @Published public private(set) var agentWaiting = false
+    /// Live-session speech amplitude (0…1); drives lip-sync while Charlie talks.
+    @Published public private(set) var voiceLevel: CGFloat = 0
 
     // Idle thresholds (seconds of no nearby input).
     private let drowsyAfter: TimeInterval = 45
@@ -255,6 +257,14 @@ public final class CreatureState: ObservableObject {
         let clamped = min(max(open, 0), 1)
         if clamped > 0 { registerInput() }
         withAnimation(.easeOut(duration: 0.15)) { mouthOpen = clamped }
+    }
+
+    /// Lip-sync amplitude from the Live session (rapid updates; the view
+    /// animates the jumps). Speaking keeps the creature awake.
+    public func setVoice(level: Float) {
+        let clamped = CGFloat(min(max(level, 0), 1))
+        if clamped > 0.05 { registerInput() }
+        voiceLevel = clamped
     }
 
     private func scheduleIdle() {

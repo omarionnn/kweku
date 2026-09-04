@@ -100,10 +100,13 @@ struct CreatureView: View {
                     .transition(.move(edge: .top).combined(with: .opacity))
             }
 
+            // Mouth: drops, yawns, and Live-session lip-sync all drive it.
+            let mouth = max(state.mouthOpen, state.voiceLevel)
             Ellipse().fill(Color.white.opacity(0.9))
-                .frame(width: eyeW * 1.5, height: max(0.5, state.mouthOpen * 7))
-                .opacity(state.mouthOpen)
+                .frame(width: eyeW * (1.2 + 0.5 * mouth), height: max(0.5, mouth * 8))
+                .opacity(mouth)
                 .offset(y: eyeCY + eyeH * 0.7)
+                .animation(.linear(duration: 0.08), value: state.voiceLevel)
         }
     }
 

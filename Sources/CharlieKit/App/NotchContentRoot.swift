@@ -1,6 +1,11 @@
 import SwiftUI
 import AppKit
 
+
+/// What lives in the nook when music isn't playing.
+enum NookMode: String {
+    case critter, weather
+}
 /// Top-level content injected into the notch window. Owns the creature, shelf,
 /// sensor and music models; handles drops and the right-click menu. Each mode
 /// (creature+shelf, Spotify) is a self-contained view that draws the shared
@@ -12,9 +17,12 @@ struct NotchContentRoot: View {
     @StateObject private var sensors: SensorHub
     @StateObject private var music = MusicHub()
     @StateObject private var agents = AgentWatchHub()
+    @StateObject private var weather = WeatherHub()
 
     @State private var isTargeted = false
     @State private var hidden = false
+    @State private var mode: NookMode =
+        NookMode(rawValue: UserDefaults.standard.string(forKey: "nookMode") ?? "") ?? .critter
 
     private let shelfPanelHeight: CGFloat = 66
     private let shelfPanelWidth: CGFloat = 200
@@ -34,6 +42,8 @@ struct NotchContentRoot: View {
             Color.clear
             if music.isShowing {
                 NowPlayingView(music: music, vm: vm)
+            } else if mode == .weather && !hidden {
+                WeatherView(weather: weather, vm: vm)
             } else {
                 VStack(spacing: 0) {
                     CreatureView(state: creature, vm: vm)
@@ -64,7 +74,16 @@ struct NotchContentRoot: View {
         .onChange(of: vm.tapCount) { _ in
             if !music.isShowing { agents.focusCurrent() }
         }
-        .onAppear { syncDraggable(); updateSize(); creature.apply(sensors.snapshot) }
+        .onChange(of: weather.snapshot) { _ in updateSize() }
+        .onChange(of: mode) { m in
+            UserDefaults.standard.set(m.rawValue, forKey: "nookMode")
+            weather.setActive(m == .weather)
+            updateSize()
+        }
+        .onAppear {
+            syncDraggable(); updateSize(); creature.apply(sensors.snapshot)
+            if mode == .weather { weather.setActive(true) }
+        }
         .contextMenu { menu }
     }
 
@@ -90,6 +109,13 @@ struct NotchContentRoot: View {
                 width = base.width + 2 * NowPlayingView.wing
                 height = base.height + NowPlayingView.lip
             }
+        } else if mode == .weather {
+            if vm.isHovering || vm.expanded {
+                width = WeatherView.expandedWidth
+                height = base.height + WeatherView.expandedBody
+            } else {
+                height = base.height + WeatherView.peek
+            }
         } else if showShelf {
             width = max(width, shelfPanelWidth)
             height += shelfPanelHeight
@@ -99,9 +125,34 @@ struct NotchContentRoot: View {
         vm.desiredSize = CGSize(width: width, height: height)
     }
 
+    /// Small modal for the manual-city fallback (spec: CoreLocation with a
+    /// manual city fallback). Only reachable from the Weather menu.
+    private func promptForCity() {
+        let alert = NSAlert()
+        alert.messageText = "Weather location"
+        alert.informativeText = "Enter a city for Charlie's weather."
+        let field = NSTextField(frame: NSRect(x: 0, y: 0, width: 220, height: 24))
+        field.placeholderString = "e.g. Grand Rapids"
+        alert.accessoryView = field
+        alert.addButton(withTitle: "Set")
+        alert.addButton(withTitle: "Cancel")
+        NSApp.activate(ignoringOtherApps: true)
+        guard alert.runModal() == .alertFirstButtonReturn else { return }
+        let name = field.stringValue.trimmingCharacters(in: .whitespaces)
+        guard !name.isEmpty else { return }
+        Task { await weather.setManualCity(name) }
+    }
+
     @ViewBuilder private var menu: some View {
-        Button { } label: { Label("Critter", systemImage: "checkmark") }
-        Button("Weather") {}.disabled(true)
+        Button(action: { mode = .critter }) {
+            Label("Critter", systemImage: mode == .critter ? "checkmark" : "")
+        }
+        Button(action: { mode = .weather }) {
+            Label("Weather", systemImage: mode == .weather ? "checkmark" : "")
+        }
+        if mode == .weather {
+            Button("Set City…") { promptForCity() }
+        }
         Button(action: { music.setEnabled(!music.enabled) }) {
             Label("Music — Spotify", systemImage: music.enabled ? "checkmark" : "")
         }

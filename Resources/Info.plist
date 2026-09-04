@@ -28,5 +28,9 @@
 	<true/>
 	<key>NSAppleEventsUsageDescription</key>
 	<string>Charlie shows and controls Spotify playback in the notch when you enable Music mode.</string>
+	<key>NSLocationUsageDescription</key>
+	<string>Charlie uses your approximate location to show local weather in the notch.</string>
+	<key>NSLocationWhenInUseUsageDescription</key>
+	<string>Charlie uses your approximate location to show local weather in the notch.</string>
 </dict>
 </plist>

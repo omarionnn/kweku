@@ -53,6 +53,8 @@ public final class CreatureState: ObservableObject {
     private var saccadeWork: DispatchWorkItem?
     private var yawnWork: DispatchWorkItem?
     private var twitchWork: DispatchWorkItem?
+    private var bangWork: DispatchWorkItem?
+    private var tableWaiting = false
     private var micActive = false
     private var lowBattery = false
     private var lastCursorMove: Date = .distantPast
@@ -83,23 +85,33 @@ public final class CreatureState: ObservableObject {
 
     deinit {
         blinkWork?.cancel(); drowsyWork?.cancel(); asleepWork?.cancel()
-        saccadeWork?.cancel(); yawnWork?.cancel(); twitchWork?.cancel()
+        saccadeWork?.cancel(); yawnWork?.cancel(); twitchWork?.cancel(); bangWork?.cancel()
     }
 
 
     // MARK: - Agent-watch reactions
 
-    /// Update from the agent session table. While any session waits on the
-    /// user, the eyes render as exclamation marks (see `CreatureView`); the
-    /// flip gets a wake + pop so it's noticed.
+    /// Update from the agent session table. A session flipping to *waiting*
+    /// shows exclamation-mark eyes for 10 seconds (wake + pop so it's
+    /// noticed), then the face returns to normal even if the session is
+    /// still waiting. A fresh waiting transition re-triggers the flash.
     public func setAgents(working: Bool, waiting: Bool) {
         if working != agentWorking { agentWorking = working }
-        if waiting != agentWaiting {
-            agentWaiting = waiting
-            if waiting {
-                registerInput()   // wake if drowsy/asleep
-                pop()
+        guard waiting != tableWaiting else { return }
+        tableWaiting = waiting
+        bangWork?.cancel(); bangWork = nil
+
+        if waiting {
+            agentWaiting = true
+            registerInput()   // wake if drowsy/asleep
+            pop()
+            let work = DispatchWorkItem { [weak self] in
+                MainActor.assumeIsolated { self?.agentWaiting = false }
             }
+            bangWork = work
+            DispatchQueue.main.asyncAfter(deadline: .now() + 10, execute: work)
+        } else {
+            agentWaiting = false
         }
     }
 

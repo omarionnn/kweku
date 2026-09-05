@@ -1,5 +1,5 @@
 import Foundation
-import KwekuKit
+@testable import KwekuKit
 
 enum GeminiLiveTests {
     static func all() {
@@ -91,14 +91,56 @@ enum GeminiLiveTests {
                                             args: ["instruction": "open PR page",
                                                    "screen_context": "https://x.test"])], "openclaw tool call")
         }
-        Check.run("maps openclaw gateway frames to notch states") {
-            let done = OpenClawBridgeManager.mapEvent(Data(#"{"type":"task","status":"completed","summary":"build finished"}"#.utf8))
-            Check.ok(done?.kind == .attention && done?.summary == "build finished", "completed -> attention")
-            let busy = OpenClawBridgeManager.mapEvent(Data(#"{"event":"agent-started","message":"deploy"}"#.utf8))
-            Check.ok(busy?.kind == .working, "started -> working")
-            Check.ok(OpenClawBridgeManager.mapEvent(Data("junk".utf8)) == nil, "garbage -> nil")
-            let info = OpenClawBridgeManager.mapEvent(Data(#"{"type":"heartbeat"}"#.utf8))
-            Check.ok(info?.kind == .info, "unknown descriptor -> info")
+        Check.run("client text frame injects a completed turn") {
+            let obj = try! JSONSerialization.jsonObject(
+                with: GeminiLiveProtocol.clientText("build finished")) as! [String: Any]
+            let content = obj["clientContent"] as! [String: Any]
+            let turns = content["turns"] as! [[String: Any]]
+            let parts = turns[0]["parts"] as! [[String: Any]]
+            Check.ok(turns[0]["role"] as? String == "user", "arrives as a user turn")
+            Check.ok(parts[0]["text"] as? String == "build finished", "carries the text")
+            Check.ok(content["turnComplete"] as? Bool == true, "closes the turn so the model speaks")
+        }
+        Check.run("setup enables both transcription streams") {
+            let obj = try! JSONSerialization.jsonObject(
+                with: GeminiLiveProtocol.setup(model: "m")) as! [String: Any]
+            let setup = obj["setup"] as! [String: Any]
+            // Empty object = auto language detection. Absent = no transcripts.
+            Check.ok(setup["inputAudioTranscription"] != nil, "input transcription requested")
+            Check.ok(setup["outputAudioTranscription"] != nil, "output transcription requested")
+        }
+        Check.run("parses caption + heard transcripts") {
+            let spoken = GeminiLiveProtocol.parse(Data(
+                #"{"serverContent":{"outputTranscription":{"text":"on it"}}}"#.utf8))
+            Check.ok(spoken == [.spokenTranscript(text: "on it")], "output -> caption")
+
+            let final = GeminiLiveProtocol.parse(Data(
+                #"{"serverContent":{"inputTranscription":{"text":"build it"}}}"#.utf8))
+            Check.ok(final == [.heardTranscript(text: "build it", interim: false)], "input -> heard")
+
+            let interim = GeminiLiveProtocol.parse(Data(
+                #"{"serverContent":{"interimInputTranscription":{"text":"buil"}}}"#.utf8))
+            Check.ok(interim == [.heardTranscript(text: "buil", interim: true)], "interim flagged")
+        }
+        Check.run("empty and malformed transcripts are dropped") {
+            // An empty fragment must not churn the caption view.
+            Check.ok(GeminiLiveProtocol.parse(Data(
+                #"{"serverContent":{"outputTranscription":{"text":""}}}"#.utf8)).isEmpty, "empty text")
+            Check.ok(GeminiLiveProtocol.parse(Data(
+                #"{"serverContent":{"outputTranscription":{}}}"#.utf8)).isEmpty, "no text field")
+            Check.ok(GeminiLiveProtocol.transcriptText("nonsense") == nil, "wrong type")
+            Check.ok(GeminiLiveProtocol.transcriptText(nil) == nil, "absent")
+        }
+        Check.run("transcript rides alongside audio in one frame") {
+            let both = #"""
+            {"serverContent":{"outputTranscription":{"text":"hi"},
+            "modelTurn":{"parts":[{"inlineData":{"mimeType":"audio/pcm","data":"AAA="}}]},
+            "turnComplete":true}}
+            """#
+            let events = GeminiLiveProtocol.parse(Data(both.utf8))
+            Check.ok(events.contains(.spokenTranscript(text: "hi")), "caption present")
+            Check.ok(events.contains(.turnComplete), "turnComplete still parsed")
+            Check.ok(events.contains { if case .audio = $0 { return true }; return false }, "audio still parsed")
         }
         Check.run("garbage yields no events") {
             Check.ok(GeminiLiveProtocol.parse(Data("nope".utf8)).isEmpty, "non-json")

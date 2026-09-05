@@ -7,143 +7,154 @@ public struct OpenClawEvent: Equatable, Sendable {
     public var summary: String
 }
 
-/// Bridge to Omari's local OpenClaw engine (gateway on ws://127.0.0.1:18789).
+/// How a dispatched task resolved from the voice session's point of view.
+public enum DispatchOutcome: Equatable, Sendable {
+    /// Finished inside the grace window — speak this now.
+    case completed(String)
+    /// Still going. Speak the ack; the real answer arrives via `onLateResult`.
+    case running(String)
+    /// Never started.
+    case failed(String)
+
+    /// What goes back to Gemini as the tool response.
+    public var toolResponse: String {
+        switch self {
+        case .completed(let text): return text
+        case .running(let ack): return ack
+        case .failed(let reason): return reason
+        }
+    }
+}
+
+/// Bridge to Omari's local OpenClaw engine.
 ///
-/// Two channels, chosen for reliability:
-/// - **Dispatch** uses the documented CLI surface (`openclaw agent --message …
-///   --json`), which routes through the same gateway. The raw gateway WS
-///   message schema is undocumented, so the CLI is the stable contract.
-/// - **Background events** come from a listen-only WebSocket on the gateway:
-///   any JSON frames are heuristically mapped (state/status/kind fields) onto
-///   Kweku's notch states (amber ember ↔ ‼️ flash). Reconnects with backoff;
-///   completely silent when OpenClaw isn't installed/running.
+/// One shared gateway websocket serves both consumers: `AgentWatchHub` (notch
+/// reactions for *any* agent activity) and `LiveSessionController` (voice
+/// dispatch). Sharing the socket means one handshake, one reconnect policy,
+/// and one place where run state lives.
+///
+/// Dispatch is deliberately not blocking. A quick task answers inside the
+/// grace window and Kweku just says the answer; a long one returns an
+/// acknowledgement immediately so the conversation keeps moving, and the
+/// result is spoken later as its own turn.
 public final class OpenClawBridgeManager {
-    public static let gatewayURL = URL(string: "ws://127.0.0.1:18789")!
 
-    private var task: URLSessionWebSocketTask?
-    private var listening = false
-    private var onEvent: ((OpenClawEvent) -> Void)?
+    public static let shared = OpenClawBridgeManager()
 
-    public init() {}
+    private let client: GatewayClient
+    private var backgroundHandler: ((OpenClawEvent) -> Void)?
 
-    // MARK: - Dispatch (documented CLI surface)
-
-    /// Run one OpenClaw task; returns bounded output for the Gemini
-    /// toolResponse. Never throws — failures come back as text the model can
-    /// relay ("OpenClaw isn't running", etc.).
-    public static func dispatchTask(instruction: String, screenContext: String?) async -> String {
-        var message = instruction
-        if let ctx = screenContext, !ctx.isEmpty {
-            message += "\n\nOn-screen context:\n\(ctx)"
-        }
-        return await withCheckedContinuation { continuation in
-            DispatchQueue.global(qos: .userInitiated).async {
-                continuation.resume(returning: run(message))
-            }
-        }
+    init(client: GatewayClient = GatewayClient()) {
+        self.client = client
+        self.client.onBackgroundEvent = { [weak self] event in self?.backgroundHandler?(event) }
     }
 
-    private static func run(_ message: String) -> String {
-        let process = Process()
-        process.executableURL = URL(fileURLWithPath: "/bin/zsh")
-        process.arguments = ["-lc", "openclaw agent --message \(shellQuote(message)) --json 2>&1"]
-        let pipe = Pipe()
-        process.standardOutput = pipe
-        process.standardError = pipe
-        do { try process.run() } catch {
-            return "OpenClaw could not be launched: \(error.localizedDescription)"
-        }
-        let data = pipe.fileHandleForReading.readDataToEndOfFile()
-        process.waitUntilExit()
-        var out = String(data: data, encoding: .utf8)?
-            .trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
-        if process.terminationStatus != 0 && out.contains("command not found") {
-            return "OpenClaw is not installed on this Mac yet."
-        }
-        if out.isEmpty {
-            out = process.terminationStatus == 0
-                ? "(dispatched with no output)"
-                : "openclaw exited with status \(process.terminationStatus)"
-        }
-        if out.count > 4000 { out = String(out.suffix(4000)) }
-        return out
-    }
+    // MARK: - Background events
 
-    static func shellQuote(_ s: String) -> String {
-        "'" + s.replacingOccurrences(of: "'", with: "'\\''") + "'"
-    }
-
-    // MARK: - Background events (gateway WebSocket, listen-only)
-
-    /// Start listening for gateway events; reconnects every 60s while the
-    /// gateway is unreachable. Events are delivered on the main queue.
+    /// Start the shared connection and mirror gateway activity onto the notch.
+    /// Silent and self-healing when the gateway isn't running.
     public func listenForBackgroundEvents(onEvent: @escaping (OpenClawEvent) -> Void) {
-        self.onEvent = onEvent
-        listening = true
-        openSocket()
+        backgroundHandler = onEvent
+        client.start()
     }
 
     public func stopListening() {
-        listening = false
-        task?.cancel(with: .goingAway, reason: nil)
-        task = nil
+        backgroundHandler = nil
+        client.stop()
     }
 
-    private func openSocket() {
-        guard listening else { return }
-        let t = URLSession.shared.webSocketTask(with: Self.gatewayURL)
-        task = t
-        t.resume()
-        receiveLoop()
-    }
+    /// Bring the socket up without subscribing to notch events — used by the
+    /// voice session so the first dispatch isn't paying for a cold handshake.
+    public func warmUp() { client.start() }
 
-    private func receiveLoop() {
-        task?.receive { [weak self] result in
-            guard let self, self.listening else { return }
-            switch result {
-            case .failure:
-                // Gateway missing/down: retry quietly.
-                self.task = nil
-                DispatchQueue.global().asyncAfter(deadline: .now() + 60) { self.openSocket() }
-            case .success(let message):
-                let data: Data
-                switch message {
-                case .data(let d): data = d
-                case .string(let s): data = Data(s.utf8)
-                @unknown default: data = Data()
-                }
-                if let event = Self.mapEvent(data) {
-                    DispatchQueue.main.async { self.onEvent?(event) }
-                }
-                self.receiveLoop()
+    // MARK: - Dispatch
+
+    /// Run one OpenClaw task.
+    ///
+    /// - Parameters:
+    ///   - grace: how long to hold the voice turn hoping for a fast answer.
+    ///     Past this, Kweku acknowledges and reports back later.
+    ///   - onProgress: streaming status/partial text, for notch state.
+    ///   - onLateResult: fires only when the run outlived the grace window.
+    public func dispatch(instruction: String,
+                         screenContext: String?,
+                         screenshot: Data? = nil,
+                         grace: TimeInterval = 6,
+                         onProgress: @escaping (String) -> Void = { _ in },
+                         onLateResult: @escaping (Result<String, GatewayError>) -> Void = { _ in })
+        async -> DispatchOutcome
+    {
+        var message = instruction
+        if let context = screenContext, !context.isEmpty {
+            message += "\n\nOn-screen context:\n\(context)"
+        }
+        // The frame is the ground truth; the text above is Gemini's reading of
+        // it. Say so, so the agent trusts its own eyes on any disagreement.
+        let frame = (screenshot?.count ?? 0) <= GatewayProtocol.maxImageBytes ? screenshot : nil
+        if frame != nil {
+            message += "\n\nOmari's screen at the moment he asked is attached. "
+                + "Trust the image over any description above it."
+        }
+
+        let state = DispatchState()
+
+        return await withCheckedContinuation { continuation in
+            client.dispatch(
+                message,
+                screenshot: frame,
+                onProgress: { progress in
+                    switch progress {
+                    case .status(let phase): onProgress(phase)
+                    case .delta(let text): onProgress(text)
+                    case .final, .failed: break
+                    }
+                },
+                onTerminal: { result in
+                    // Landed in time: answer inline. Landed late: speak it later.
+                    if state.claimInline() {
+                        switch result {
+                        case .success(let text):
+                            continuation.resume(returning: .completed(Self.trim(text)))
+                        case .failure(let error):
+                            continuation.resume(returning: .failed(error.spoken))
+                        }
+                    } else {
+                        onLateResult(result.map { Self.trim($0) })
+                    }
+                })
+
+            DispatchQueue.main.asyncAfter(deadline: .now() + grace) {
+                guard state.claimDeferred() else { return }
+                continuation.resume(returning: .running(
+                    "Started — this one's going to take a moment. I'll tell you the moment it lands."))
             }
         }
     }
 
-    /// Heuristic mapping of gateway JSON frames to notch states (pure,
-    /// unit-tested). Unknown frames are ignored.
-    public static func mapEvent(_ data: Data) -> OpenClawEvent? {
-        guard let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else {
-            return nil
-        }
-        // Collect plausible descriptor fields from common shapes.
-        var descriptor = ""
-        for key in ["type", "kind", "state", "status", "event", "method"] {
-            if let v = obj[key] as? String { descriptor += v.lowercased() + " " }
-        }
-        if descriptor.isEmpty { return nil }
-        let summary = (obj["summary"] as? String)
-            ?? (obj["message"] as? String)
-            ?? descriptor.trimmingCharacters(in: .whitespaces)
+    /// Bounded so a long transcript can't blow up the voice turn.
+    static func trim(_ text: String, limit: Int = 4000) -> String {
+        let clean = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        if clean.isEmpty { return "(no output)" }
+        return clean.count > limit ? String(clean.suffix(limit)) : clean
+    }
+}
 
-        let attention = ["finish", "complete", "done", "error", "fail", "alert", "attention", "pr "]
-        let working = ["start", "running", "progress", "working", "busy", "dispatch"]
-        if attention.contains(where: descriptor.contains) {
-            return OpenClawEvent(kind: .attention, summary: summary)
-        }
-        if working.contains(where: descriptor.contains) {
-            return OpenClawEvent(kind: .working, summary: summary)
-        }
-        return OpenClawEvent(kind: .info, summary: summary)
+/// Guards the one-shot continuation: whichever of the terminal event or the
+/// grace timer arrives first wins, and the loser becomes the late path.
+private final class DispatchState: @unchecked Sendable {
+    private let lock = NSLock()
+    private var resumed = false
+
+    /// The run finished first.
+    func claimInline() -> Bool { claim() }
+    /// The grace window expired first.
+    func claimDeferred() -> Bool { claim() }
+
+    private func claim() -> Bool {
+        lock.lock()
+        defer { lock.unlock() }
+        if resumed { return false }
+        resumed = true
+        return true
     }
 }

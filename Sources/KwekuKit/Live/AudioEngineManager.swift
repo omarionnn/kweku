@@ -15,6 +15,13 @@ public final class AudioEngineManager: ObservableObject {
     @Published public private(set) var currentSpeakerAmplitude: Float = 0
 
     var onMicChunk: ((Data) -> Void)?
+    /// Fires on real silent↔speaking transitions of the playback queue. The
+    /// falling edge is the true "Kweku stopped talking" moment; `turnComplete`
+    /// arrives well before it, while the speaker is still playing the tail.
+    var onSpeakingChanged: ((Bool) -> Void)?
+
+    /// True while audio is still queued or in flight.
+    var isSpeaking: Bool { draining }
 
     private let engine = AVAudioEngine()
     private let player = AVAudioPlayerNode()
@@ -27,7 +34,14 @@ public final class AudioEngineManager: ObservableObject {
     // Jitter buffer (all mutated on main).
     private var pending = Data()
     private var inFlight = 0
-    private var draining = false          // started playing this turn
+    /// Started playing this turn. Every start/stop path routes through here,
+    /// so observing it covers natural drain, barge-in, and teardown alike.
+    private var draining = false {
+        didSet {
+            guard draining != oldValue else { return }
+            onSpeakingChanged?(draining)
+        }
+    }
     private static let blockBytes = 12_000    // 0.25s @ 24kHz s16
     private static let prebufferBytes = 19_200 // 0.4s before starting a turn
 
@@ -168,6 +182,8 @@ public final class AudioEngineManager: ObservableObject {
     }
 
     private func finishSpeaking() {
+        // `draining`'s observer suppresses the repeat notifications that
+        // arrive as trailing blocks retire.
         draining = false
         currentSpeakerAmplitude = 0
         // Echo tail: keep the mic muted briefly after the last block ends.

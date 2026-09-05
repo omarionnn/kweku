@@ -21,6 +21,20 @@ final class ScreenCaptureManager: NSObject, SCStreamDelegate, SCStreamOutput {
     /// Surfaced problems (missing permission, stream death) for the UI/status.
     var onIssue: ((String) -> Void)?
 
+    /// Most recent frame sent upstream, kept so a dispatched OpenClaw task can
+    /// carry the actual screen rather than a description of it. Written on
+    /// `queue`, read from main.
+    private let frameLock = NSLock()
+    private var lastFrame: Data?
+
+    /// The current screen as JPEG, at most ~1s old. Nil before the first frame
+    /// or when screen capture isn't permitted.
+    func latestFrame() -> Data? {
+        frameLock.lock()
+        defer { frameLock.unlock() }
+        return lastFrame
+    }
+
     func startStreaming(onFrame: @escaping (Data) -> Void) {
         self.onFrame = onFrame
 
@@ -90,6 +104,9 @@ final class ScreenCaptureManager: NSObject, SCStreamDelegate, SCStreamOutput {
         lastSentAt = now
 
         guard let jpeg = Self.jpegData(from: pixelBuffer, context: ciContext) else { return }
+        frameLock.lock()
+        lastFrame = jpeg
+        frameLock.unlock()
         framesSent += 1
         if ProcessInfo.processInfo.environment["KWEKU_LIVE_DEBUG"] != nil, framesSent % 10 == 1 {
             let line = "\(now.timeIntervalSince1970) frame#\(framesSent) jpeg=\(jpeg.count)B\n"

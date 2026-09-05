@@ -47,6 +47,12 @@ final class GeminiLiveClient {
         send(GeminiLiveProtocol.toolResponse(id: id, name: name, output: output))
     }
 
+    /// Deliver a late OpenClaw result as a fresh turn so the model speaks it.
+    func sendClientText(_ text: String) {
+        guard state == .live else { return }
+        send(GeminiLiveProtocol.clientText(text))
+    }
+
     private func send(_ data: Data) {
         task?.send(.data(data)) { [weak self] error in
             if let error {

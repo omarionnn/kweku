@@ -8,6 +8,11 @@ public enum GeminiServerEvent: Equatable, Sendable {
     case interrupted                                  // user barge-in: flush playback
     case turnComplete
     case goAway
+    /// What Omari said. `interim` marks a low-latency partial that a later
+    /// final transcript supersedes.
+    case heardTranscript(text: String, interim: Bool)
+    /// What Kweku is saying, for the caption ticker.
+    case spokenTranscript(text: String)
 }
 
 /// Pure wire-format builders + parser for the Gemini Live (BidiGenerateContent)
@@ -37,6 +42,10 @@ public enum GeminiLiveProtocol {
                 "model": model,
                 "generationConfig": ["responseModalities": ["AUDIO"]],
                 "systemInstruction": ["parts": [["text": system]]],
+                // Empty config = automatic language detection. Enables the
+                // caption ticker: without these the server sends audio only.
+                "inputAudioTranscription": [String: String](),
+                "outputAudioTranscription": [String: String](),
                 "tools": [
                     [
                         "functionDeclarations": [
@@ -94,6 +103,16 @@ public enum GeminiLiveProtocol {
         realtimeChunk(mimeType: "image/jpeg", base64: jpeg.base64EncodedString())
     }
 
+    /// Inject a text turn into the live conversation. Used to deliver an
+    /// OpenClaw result that outlived its tool call: the model receives it as a
+    /// new user turn and speaks it in its own voice.
+    public static func clientText(_ text: String) -> Data {
+        encode(["clientContent": [
+            "turns": [["role": "user", "parts": [["text": text]]]],
+            "turnComplete": true,
+        ]])
+    }
+
     public static func toolResponse(id: String, name: String, output: String) -> Data {
         encode(["toolResponse": ["functionResponses": [[
             "id": id, "name": name, "response": ["output": output],
@@ -118,6 +137,20 @@ public enum GeminiLiveProtocol {
 
         if let content = obj["serverContent"] as? [String: Any] {
             if (content["interrupted"] as? Bool) == true { events.append(.interrupted) }
+
+            // Transcripts are independent of the model turn — they carry no
+            // ordering guarantee against it, and arrive as fragments to
+            // append rather than cumulative snapshots to replace.
+            if let text = transcriptText(content["interimInputTranscription"]) {
+                events.append(.heardTranscript(text: text, interim: true))
+            }
+            if let text = transcriptText(content["inputTranscription"]) {
+                events.append(.heardTranscript(text: text, interim: false))
+            }
+            if let text = transcriptText(content["outputTranscription"]) {
+                events.append(.spokenTranscript(text: text))
+            }
+
             if let turn = content["modelTurn"] as? [String: Any],
                let parts = turn["parts"] as? [[String: Any]] {
                 for part in parts {
@@ -142,5 +175,15 @@ public enum GeminiLiveProtocol {
             }
         }
         return events
+    }
+
+    /// A `Transcription` object carries an optional `text`. Empty fragments
+    /// are dropped so they can't churn the caption view.
+    static func transcriptText(_ raw: Any?) -> String? {
+        guard let object = raw as? [String: Any],
+              let text = object["text"] as? String,
+              !text.isEmpty
+        else { return nil }
+        return text
     }
 }

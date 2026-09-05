@@ -1,11 +1,13 @@
 import AppKit
 import Combine
+import SwiftUI
+import CoreImage
 
 /// Automatic Spotify watcher — no toggle. The Spotify *process* is detected
 /// permission-free via NSWorkspace launch/terminate notifications; polling
 /// (and therefore the one-time Automation prompt) only happens while Spotify
 /// is actually running. The island shows while a track is playing and for a
-/// 60s grace period after pause, then yields back to the critter.
+/// 30s grace period after pause, then yields back to the critter.
 @MainActor
 public final class MusicHub: ObservableObject {
     @Published public private(set) var now: NowPlaying = .notRunning
@@ -13,6 +15,8 @@ public final class MusicHub: ObservableObject {
     @Published public private(set) var permissionDenied = false
     /// Whether the island should occupy the notch right now.
     @Published public private(set) var showing = false
+    /// Cover-derived tint for the play animation.
+    @Published public private(set) var accent: Color = .white
 
     private var timer: Timer?
     private var loadedArtworkURL: String?
@@ -41,7 +45,7 @@ public final class MusicHub: ObservableObject {
     /// Pure showing rule (unit-tested): playing, or paused within the grace.
     public nonisolated static func shouldShow(hasTrack: Bool, isPlaying: Bool,
                                               secondsSincePlaying: TimeInterval,
-                                              grace: TimeInterval = 60) -> Bool {
+                                              grace: TimeInterval = 30) -> Bool {
         hasTrack && (isPlaying || secondsSincePlaying < grace)
     }
 
@@ -97,15 +101,39 @@ public final class MusicHub: ObservableObject {
 
     private func loadArtworkIfNeeded(_ np: NowPlaying) {
         guard let url = np.artworkURL else {
-            artwork = nil; loadedArtworkURL = nil; return
+            artwork = nil; loadedArtworkURL = nil; accent = .white; return
         }
         guard url.absoluteString != loadedArtworkURL else { return }
         loadedArtworkURL = url.absoluteString
         Task { [weak self] in
             guard let (data, _) = try? await URLSession.shared.data(from: url),
                   let image = NSImage(data: data) else { return }
-            await MainActor.run { self?.artwork = image }
+            let accent = Self.averageColor(of: image)
+            await MainActor.run {
+                self?.artwork = image
+                self?.accent = accent ?? .white
+            }
         }
+    }
+
+    /// Average colour of the cover (CIAreaAverage), lightened so it reads on
+    /// black. Drives the equalizer tint + play glow.
+    nonisolated static func averageColor(of image: NSImage) -> Color? {
+        guard let tiff = image.tiffRepresentation,
+              let ci = CIImage(data: tiff) else { return nil }
+        let filter = CIFilter(name: "CIAreaAverage", parameters: [
+            kCIInputImageKey: ci,
+            kCIInputExtentKey: CIVector(cgRect: ci.extent),
+        ])
+        guard let out = filter?.outputImage else { return nil }
+        var px = [UInt8](repeating: 0, count: 4)
+        CIContext(options: [.workingColorSpace: NSNull()])
+            .render(out, toBitmap: &px, rowBytes: 4,
+                    bounds: CGRect(x: 0, y: 0, width: 1, height: 1),
+                    format: .RGBA8, colorSpace: nil)
+        // Lift toward white so dark covers still glow.
+        func lift(_ v: UInt8) -> Double { min(1.0, Double(v) / 255.0 * 0.7 + 0.3) }
+        return Color(red: lift(px[0]), green: lift(px[1]), blue: lift(px[2]))
     }
 
     // MARK: Controls (optimistic; a poll reconciles within ~1s)

@@ -188,6 +188,9 @@ struct NotchContentRoot: View {
         } else {
             Button("Start Charlie Live") { startLive() }
         }
+        if !live.status.isEmpty {
+            Button("Live: \(live.status)") {}.disabled(true)
+        }
         Button("Set Gemini API Key…") { promptForGeminiKey() }
         Divider()
         Button(action: { agents.runSetup() }) {

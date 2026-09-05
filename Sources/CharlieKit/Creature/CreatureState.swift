@@ -64,6 +64,8 @@ public final class CreatureState: ObservableObject {
     private var twitchWork: DispatchWorkItem?
     private var bangWork: DispatchWorkItem?
     private var tableWaiting = false
+    private var typingTimer: Timer?
+    private var typingNow = false
     private var micActive = false
     private var lowBattery = false
     private var lastCursorMove: Date = .distantPast
@@ -90,11 +92,43 @@ public final class CreatureState: ObservableObject {
         scheduleBlink()
         scheduleIdle()
         scheduleSaccade()
+        startTypingWatch()
+    }
+
+    // MARK: - Typing watch (look down while the user types)
+
+    /// Uses `CGEventSource.secondsSinceLastEventType` — a permission-free
+    /// "seconds since last keypress" timestamp (no key contents, no
+    /// Input-Monitoring prompt). Polled at 2 Hz.
+    private func startTypingWatch() {
+        let timer = Timer(timeInterval: 0.5, repeats: true) { [weak self] _ in
+            MainActor.assumeIsolated { self?.checkTyping() }
+        }
+        RunLoop.main.add(timer, forMode: .common)
+        typingTimer = timer
+    }
+
+    private func checkTyping() {
+        let since = CGEventSource.secondsSinceLastEventType(.combinedSessionState,
+                                                            eventType: .keyDown)
+        if since < 0.9 {
+            registerInput()                     // typing keeps the creature awake
+            if !typingNow {
+                typingNow = true
+                withAnimation(.easeInOut(duration: 0.25)) {
+                    gaze = CGSize(width: 0, height: 0.95)   // watch you type
+                }
+            }
+        } else if typingNow {
+            typingNow = false
+            withAnimation(.easeInOut(duration: 0.4)) { gaze = .zero }
+        }
     }
 
     deinit {
         blinkWork?.cancel(); drowsyWork?.cancel(); asleepWork?.cancel()
         saccadeWork?.cancel(); yawnWork?.cancel(); twitchWork?.cancel(); bangWork?.cancel()
+        typingTimer?.invalidate()
     }
 
 
@@ -331,7 +365,7 @@ public final class CreatureState: ObservableObject {
     }
 
     private func saccade() {
-        guard mood == .awake else { return }
+        guard mood == .awake, !typingNow else { return }
         // Don't fight an actively-moving cursor.
         if Date().timeIntervalSince(lastCursorMove) > 1.0 {
             gaze = CGSize(width: .random(in: -0.5...0.5), height: .random(in: -0.35...0.35))

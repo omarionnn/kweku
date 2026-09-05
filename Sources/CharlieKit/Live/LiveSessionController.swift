@@ -58,6 +58,11 @@ public final class LiveSessionController: ObservableObject {
             client.disconnect()
             return false
         }
+        screen.onIssue = { [weak self] issue in
+            DispatchQueue.main.async {
+                MainActor.assumeIsolated { self?.status = issue }
+            }
+        }
         screen.startStreaming { [weak self] jpeg in self?.client.sendVideoFrame(jpeg) }
 
         running = true
@@ -83,6 +88,7 @@ public final class LiveSessionController: ObservableObject {
             audio.enqueuePlayback(pcm)
         case .interrupted:
             audio.interruptPlayback()
+            screen.noteUserTurn()        // user barged in: refresh their view
         case .toolCall(let id, let name, let prompt):
             let cwd = ompCwdProvider()
             Task { [weak self] in
@@ -94,7 +100,8 @@ public final class LiveSessionController: ObservableObject {
         case .goAway:
             status = "server ending session"
         case .turnComplete:
-            audio.flushPlayback()   // play out the sub-block tail
+            audio.flushPlayback()        // play out the sub-block tail
+            screen.noteUserTurn()        // user's turn: next frame is fresh
         }
     }
 }

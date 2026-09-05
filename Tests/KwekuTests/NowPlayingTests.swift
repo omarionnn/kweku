@@ -44,5 +44,16 @@ enum NowPlayingTests {
             Check.ok(NowPlaying.formatTime(63) == "1:03", "1:03")
             Check.ok(NowPlaying.formatTime(605) == "10:05", "10:05")
         }
+
+        Check.run("auto-show rule: playing, or paused within grace") {
+            Check.ok(MusicHub.shouldShow(hasTrack: true, isPlaying: true, secondsSincePlaying: 999),
+                     "playing always shows")
+            Check.ok(MusicHub.shouldShow(hasTrack: true, isPlaying: false, secondsSincePlaying: 30),
+                     "paused 30s still shows")
+            Check.ok(!MusicHub.shouldShow(hasTrack: true, isPlaying: false, secondsSincePlaying: 61),
+                     "paused 61s yields to critter")
+            Check.ok(!MusicHub.shouldShow(hasTrack: false, isPlaying: false, secondsSincePlaying: 0),
+                     "no track never shows")
+        }
     }
 }

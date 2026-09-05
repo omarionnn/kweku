@@ -1,16 +1,15 @@
 import AppKit
 import Combine
+import SwiftUI
+import CoreImage
 
-/// Opt-in Spotify watcher. Polls the desktop app ~1s and publishes now-playing
-/// state + cached artwork for the Dynamic-Island panel.
-///
-/// Off by default. Enabling it is the lazy trigger for the one-time Automation
-/// prompt (only when Spotify is also running). Album art is fetched from the
-/// URL Spotify provides — the module's one network use; nothing is fetched
-/// while the module is disabled.
+/// Automatic Spotify watcher — no toggle. The Spotify *process* is detected
+/// permission-free via NSWorkspace launch/terminate notifications; polling
+/// (and therefore the one-time Automation prompt) only happens while Spotify
+/// is actually running. The island shows while a track is playing and for a
+/// 30s grace period after pause, then yields back to the critter.
 @MainActor
 public final class MusicHub: ObservableObject {
-    @Published public private(set) var enabled = false
     @Published public private(set) var now: NowPlaying = .notRunning
     @Published public private(set) var artwork: NSImage?
     /// Accent pulled from the current cover; nil for greyscale art, where the
@@ -19,28 +18,44 @@ public final class MusicHub: ObservableObject {
     /// Anchor for interpolating the playhead between polls.
     @Published public private(set) var clock = PlaybackClock()
     @Published public private(set) var permissionDenied = false
+    /// Whether the island should occupy the notch right now.
+    @Published public private(set) var showing = false
 
     private var timer: Timer?
     private var loadedArtworkURL: String?
-
-    private let defaultsKey = "musicEnabled"
+    private var lastPlayingAt: Date = .distantPast
+    private var observers: [NSObjectProtocol] = []
 
     public init() {
-        enabled = UserDefaults.standard.bool(forKey: defaultsKey)
-        if enabled { startPolling() }
+        let center = NSWorkspace.shared.notificationCenter
+        for (name, launched) in [(NSWorkspace.didLaunchApplicationNotification, true),
+                                 (NSWorkspace.didTerminateApplicationNotification, false)] {
+            let obs = center.addObserver(forName: name, object: nil, queue: .main) { [weak self] note in
+                guard let app = note.userInfo?[NSWorkspace.applicationUserInfoKey] as? NSRunningApplication,
+                      app.bundleIdentifier == SpotifyController.bundleID else { return }
+                MainActor.assumeIsolated { launched ? self?.startPolling() : self?.stopPolling() }
+            }
+            observers.append(obs)
+        }
+        if SpotifyController.isRunning() { startPolling() }
     }
 
-    /// A track worth showing (module on, Spotify up, something loaded).
-    public var isShowing: Bool { enabled && now.hasTrack }
-
-    public func setEnabled(_ on: Bool) {
-        guard on != enabled else { return }
-        enabled = on
-        UserDefaults.standard.set(on, forKey: defaultsKey)
-        if on { startPolling() } else { stopPolling() }
+    deinit {
+        for obs in observers { NSWorkspace.shared.notificationCenter.removeObserver(obs) }
+        timer?.invalidate()
     }
+
+    /// Pure showing rule (unit-tested): playing, or paused within the grace.
+    public nonisolated static func shouldShow(hasTrack: Bool, isPlaying: Bool,
+                                              secondsSincePlaying: TimeInterval,
+                                              grace: TimeInterval = 30) -> Bool {
+        hasTrack && (isPlaying || secondsSincePlaying < grace)
+    }
+
+    public var isShowing: Bool { showing }
 
     private func startPolling() {
+        guard timer == nil else { return }
         // Defer the first poll: it runs a synchronous AppleScript Apple Event,
         // which must not happen during view construction / first render (it
         // races SwiftUI's update and aborts the process).
@@ -62,12 +77,13 @@ public final class MusicHub: ObservableObject {
         loadedArtworkURL = nil
         clock = PlaybackClock()
         permissionDenied = false
+        showing = false
     }
 
     private func poll() {
         let result = SpotifyController.fetch()
         if ProcessInfo.processInfo.environment["KWEKU_MUSIC_DEBUG"] != nil {
-            FileHandle.standardError.write(Data("music fetch=\(result) enabled=\(enabled)\n".utf8))
+            FileHandle.standardError.write(Data("music fetch=\(result)\n".utf8))
         }
         switch result {
         case .ok(let np):
@@ -77,6 +93,7 @@ public final class MusicHub: ObservableObject {
             // absorbs playback moving without us (scrubbed in Spotify itself,
             // skipped from the menu bar, AirPods double-tap).
             reanchor()
+            if np.isPlaying { lastPlayingAt = Date() }
             loadArtworkIfNeeded(np)
         case .notRunning:
             permissionDenied = false
@@ -89,6 +106,9 @@ public final class MusicHub: ObservableObject {
         case .failed:
             break
         }
+        let show = Self.shouldShow(hasTrack: now.hasTrack, isPlaying: now.isPlaying,
+                                   secondsSincePlaying: Date().timeIntervalSince(lastPlayingAt))
+        if show != showing { showing = show }
     }
 
     private func loadArtworkIfNeeded(_ np: NowPlaying) {

@@ -98,7 +98,7 @@ struct NotchContentRoot: View {
         .onChange(of: shelf.items.count) { _ in updateSize() }
         .onChange(of: hidden) { _ in updateSize() }
         .onChange(of: music.now) { _ in syncDraggable(); updateSize() }
-        .onChange(of: music.enabled) { _ in syncDraggable(); updateSize() }
+        .onChange(of: music.showing) { _ in syncDraggable(); updateSize() }
         .onChange(of: sensors.snapshot) { creature.apply($0) }
         .onChange(of: agents.table) { _ in
             creature.setAgents(working: agents.anyWorking, waiting: agents.anyWaiting)
@@ -328,9 +328,6 @@ struct NotchContentRoot: View {
         }
         if mode == .weather {
             Button("Set City…") { promptForCity() }
-        }
-        Button(action: { music.setEnabled(!music.enabled) }) {
-            Label("Music — Spotify", systemImage: music.enabled ? "checkmark" : "")
         }
         Button(hidden ? "Show" : "Hide") { hidden.toggle() }
         Divider()

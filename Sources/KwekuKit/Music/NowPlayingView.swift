@@ -19,6 +19,7 @@ struct NowPlayingView: View {
     @ObservedObject var vm: NotchViewModel
     var rim: NotchRimStyle
 
+    @State private var artGlow = false
     /// Width of each side wing holding art / equalizer (iPhone ears ≈ 52pt).
     static let wing: CGFloat = 48
     /// Extra lip below the menu-bar band so the pill reads as one shape.
@@ -86,12 +87,30 @@ struct NowPlayingView: View {
 
     private var collapsedFlanks: some View {
         HStack {
-            artwork(side: 21)
+            // Art with a breathing accent glow while playing.
+            ZStack {
+                RoundedRectangle(cornerRadius: 7, style: .continuous)
+                    .fill(accent)
+                    .frame(width: 25, height: 25)
+                    .blur(radius: 5)
+                    .opacity(music.now.isPlaying ? (artGlow ? 0.85 : 0.35) : 0)
+                artwork(side: 21)
+            }
+            .onAppear { startArtGlow() }
+            .onChange(of: music.now.isPlaying) { _ in startArtGlow() }
             Spacer(minLength: 0)              // the physical cutout lives here
             Equalizer(active: music.now.isPlaying, colour: accent)
-                .frame(width: 18, height: 14)
+                .frame(width: 22, height: 15)
         }
         .padding(.horizontal, 13)
+    }
+
+    private func startArtGlow() {
+        artGlow = false
+        guard music.now.isPlaying else { return }
+        withAnimation(.easeInOut(duration: 1.1).repeatForever(autoreverses: true)) {
+            artGlow = true
+        }
     }
 
     // MARK: Expanded
@@ -310,24 +329,27 @@ private struct MarqueeWidthKey: PreferenceKey {
     static func reduce(value: inout CGFloat, nextValue: () -> CGFloat) { value = nextValue() }
 }
 
-/// Audio equalizer bars; oscillate (Core-Animation-driven) while playing.
+/// Audio equalizer bars; oscillate (Core-Animation-driven) while playing,
+/// tinted with the album's accent colour.
 private struct Equalizer: View {
     var active: Bool
-    var colour: Color
+    var colour: Color = .white
     @State private var up = false
-    private let durations: [Double] = [0.42, 0.58, 0.5, 0.64]
+    private let durations: [Double] = [0.38, 0.55, 0.46, 0.62, 0.42]
     var body: some View {
         HStack(alignment: .center, spacing: 2) {
-            ForEach(0..<4, id: \.self) { i in
-                Capsule().fill(colour.opacity(0.9)).frame(width: 2.5, height: barHeight(i))
-                    .animation(active ? .easeInOut(duration: durations[i]).repeatForever(autoreverses: true) : .easeOut(duration: 0.2), value: up)
+            ForEach(0..<5, id: \.self) { i in
+                Capsule().fill(colour.opacity(0.9))
+                    .frame(width: 2.6, height: barHeight(i))
+                    .animation(active ? .easeInOut(duration: durations[i]).repeatForever(autoreverses: true)
+                                      : .easeOut(duration: 0.2), value: up)
             }
         }
         .onAppear { up = active }
         .onChange(of: active) { up = $0 }
     }
     private func barHeight(_ i: Int) -> CGFloat {
-        let lows: [CGFloat] = [4, 6, 3, 5], highs: [CGFloat] = [12, 9, 13, 10]
+        let lows: [CGFloat] = [4, 7, 3, 6, 4], highs: [CGFloat] = [13, 9, 15, 10, 12]
         return active ? (up ? highs[i] : lows[i]) : lows[i]
     }
 }

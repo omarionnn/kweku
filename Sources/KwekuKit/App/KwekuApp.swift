@@ -28,7 +28,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         let std = UserDefaults.standard
         guard !std.bool(forKey: "kwekuMigrated"),
               let old = UserDefaults(suiteName: "com.charlie.app") else { return }
-        for key in ["musicEnabled", "geminiApiKey", "geminiLiveModel", "nookMode",
+        for key in ["geminiApiKey", "geminiLiveModel", "nookMode",
                     "weatherManualCity", "weatherLastSnapshot"] {
             if std.object(forKey: key) == nil, let value = old.object(forKey: key) {
                 std.set(value, forKey: key)

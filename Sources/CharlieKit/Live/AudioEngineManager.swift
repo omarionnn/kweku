@@ -3,11 +3,14 @@ import Combine
 
 /// Full-duplex audio for the Live session:
 /// - Mic → 16 kHz mono 16-bit PCM chunks (converted from the hardware format).
-/// - Gemini's 24 kHz 16-bit PCM replies → `AVAudioPlayerNode` playback.
-/// - Publishes the playback RMS (0…1) so the notch face can lip-sync.
+/// - Gemini's 24 kHz PCM replies → jitter-buffered `AVAudioPlayerNode` playback.
+/// - Publishes playback RMS (0…1) so the notch face can lip-sync.
 ///
-/// Not main-actor: the mic tap runs on a realtime thread. Published values are
-/// only mutated on the main queue.
+/// Two deliberate behaviours:
+/// - No `setVoiceProcessingEnabled` (macOS voice processing yields silent taps).
+/// - Half-duplex instead: the mic uplink is muted while Charlie is speaking
+///   (+ a short tail), so speaker echo can't trigger Gemini's barge-in and cut
+///   sentences short.
 public final class AudioEngineManager: ObservableObject {
     @Published public private(set) var currentSpeakerAmplitude: Float = 0
 
@@ -20,7 +23,17 @@ public final class AudioEngineManager: ObservableObject {
                                           channels: 1, interleaved: true)!
     private var micConverter: AVAudioConverter?
     private var running = false
-    private var quietWork: DispatchWorkItem?
+
+    // Jitter buffer (all mutated on main).
+    private var pending = Data()
+    private var inFlight = 0
+    private var draining = false          // started playing this turn
+    private static let blockBytes = 12_000    // 0.25s @ 24kHz s16
+    private static let prebufferBytes = 19_200 // 0.4s before starting a turn
+
+    // Half-duplex mic gate (read from the audio thread).
+    private let gateLock = NSLock()
+    private var micMutedUntil: TimeInterval = 0
 
     // MARK: - Lifecycle
 
@@ -29,10 +42,6 @@ public final class AudioEngineManager: ObservableObject {
     func start() throws {
         guard !running else { return }
         let input = engine.inputNode
-        // NOTE: deliberately NOT enabling setVoiceProcessingEnabled — on macOS
-        // it routinely makes input taps deliver silent buffers. Gemini's
-        // server-side VAD/barge-in copes with speaker echo.
-
         let hardware = input.outputFormat(forBus: 0)
         micConverter = AVAudioConverter(from: hardware, to: micFormat)
 
@@ -54,12 +63,22 @@ public final class AudioEngineManager: ObservableObject {
         player.stop()
         engine.stop()
         running = false
+        pending.removeAll()
+        inFlight = 0
+        draining = false
+        setMicMuted(until: 0)
         DispatchQueue.main.async { self.currentSpeakerAmplitude = 0 }
     }
 
-    // MARK: - Mic → 16 kHz PCM
+    // MARK: - Mic → 16 kHz PCM (audio thread)
 
     private func convertAndForward(_ buffer: AVAudioPCMBuffer) {
+        // Half-duplex: drop mic input while Charlie is speaking.
+        gateLock.lock()
+        let mutedUntil = micMutedUntil
+        gateLock.unlock()
+        guard Date().timeIntervalSince1970 >= mutedUntil else { return }
+
         guard let converter = micConverter else { return }
         let ratio = micFormat.sampleRate / buffer.format.sampleRate
         let capacity = AVAudioFrameCount(Double(buffer.frameLength) * ratio) + 64
@@ -78,54 +97,110 @@ public final class AudioEngineManager: ObservableObject {
         onMicChunk?(data)
     }
 
-    // Env-gated diagnostics: CHARLIE_LIVE_DEBUG=1 -> /tmp/charlie_live.log
+    private func setMicMuted(until: TimeInterval) {
+        gateLock.lock()
+        micMutedUntil = until
+        gateLock.unlock()
+    }
+
+    // MARK: - 24 kHz PCM → jitter-buffered playback (main thread)
+
+    /// Append one PCM chunk from Gemini. Playback starts once ~0.4s is
+    /// buffered (or on `flushPlayback`) and proceeds in 0.25s blocks so
+    /// network jitter never causes mid-sentence gaps.
+    func enqueuePlayback(_ pcm24k: Data) {
+        pending.append(pcm24k)
+        if !draining && pending.count >= Self.prebufferBytes { draining = true }
+        pump(force: false)
+    }
+
+    /// Turn finished: play out whatever remains, even if under one block.
+    func flushPlayback() {
+        draining = true
+        pump(force: true)
+    }
+
+    /// Barge-in / session teardown: drop everything queued.
+    func interruptPlayback() {
+        pending.removeAll()
+        inFlight = 0
+        draining = false
+        player.stop()
+        if running { player.play() }
+        setMicMuted(until: 0)
+        DispatchQueue.main.async { self.currentSpeakerAmplitude = 0 }
+    }
+
+    private func pump(force: Bool) {
+        guard running, draining else { return }
+        // Keep a few blocks in flight; schedule whole blocks, or the remainder
+        // when flushing.
+        while inFlight < 4 {
+            let take: Int
+            if pending.count >= Self.blockBytes { take = Self.blockBytes }
+            else if force && !pending.isEmpty { take = pending.count }
+            else { break }
+
+            let chunk = pending.prefix(take)
+            pending.removeFirst(take)
+            guard let buffer = makeBuffer(Data(chunk)) else { continue }
+
+            inFlight += 1
+            // Speaking: gate the mic well past the scheduled audio.
+            setMicMuted(until: Date().timeIntervalSince1970 + 5)
+            player.scheduleBuffer(buffer) { [weak self] in
+                DispatchQueue.main.async { self?.blockFinished() }
+            }
+            if !player.isPlaying { player.play() }
+
+            currentSpeakerAmplitude = AudioMath.uiLevel(fromRMS: AudioMath.rms(pcm16: Data(chunk)))
+        }
+        if pending.isEmpty && inFlight == 0 { finishSpeaking() }
+    }
+
+    private func blockFinished() {
+        inFlight = max(0, inFlight - 1)
+        if pending.isEmpty && inFlight == 0 {
+            finishSpeaking()
+        } else {
+            pump(force: draining && pending.count < Self.blockBytes)
+        }
+    }
+
+    private func finishSpeaking() {
+        draining = false
+        currentSpeakerAmplitude = 0
+        // Echo tail: keep the mic muted briefly after the last block ends.
+        setMicMuted(until: Date().timeIntervalSince1970 + 0.35)
+    }
+
+    private func makeBuffer(_ pcm: Data) -> AVAudioPCMBuffer? {
+        let frames = pcm.count / 2
+        guard frames > 0,
+              let buffer = AVAudioPCMBuffer(pcmFormat: playbackFormat,
+                                            frameCapacity: AVAudioFrameCount(frames))
+        else { return nil }
+        buffer.frameLength = AVAudioFrameCount(frames)
+        pcm.withUnsafeBytes { raw in
+            let samples = raw.bindMemory(to: Int16.self)
+            let channel = buffer.floatChannelData![0]
+            for i in 0..<frames { channel[i] = Float(Int16(littleEndian: samples[i])) / 32768.0 }
+        }
+        return buffer
+    }
+
+    // MARK: - Diagnostics (CHARLIE_LIVE_DEBUG=1 -> /tmp/charlie_live.log)
+
     private var debugChunks = 0
     private func logMicLevel(_ chunk: Data) {
         guard ProcessInfo.processInfo.environment["CHARLIE_LIVE_DEBUG"] != nil else { return }
         debugChunks += 1
-        guard debugChunks % 20 == 1 else { return }   // ~every 2s of audio
+        guard debugChunks % 20 == 1 else { return }
         let line = "\(Date().timeIntervalSince1970) mic chunk#\(debugChunks) bytes=\(chunk.count) rms=\(AudioMath.rms(pcm16: chunk))\n"
         if let h = FileHandle(forWritingAtPath: "/tmp/charlie_live.log") {
             h.seekToEndOfFile(); h.write(Data(line.utf8)); h.closeFile()
         } else {
             try? line.write(toFile: "/tmp/charlie_live.log", atomically: true, encoding: .utf8)
         }
-    }
-
-    // MARK: - 24 kHz PCM → playback
-
-    /// Queue one PCM chunk from Gemini and update the lip-sync amplitude.
-    func enqueuePlayback(_ pcm24k: Data) {
-        let frames = pcm24k.count / 2
-        guard frames > 0,
-              let buffer = AVAudioPCMBuffer(pcmFormat: playbackFormat,
-                                            frameCapacity: AVAudioFrameCount(frames))
-        else { return }
-        buffer.frameLength = AVAudioFrameCount(frames)
-        pcm24k.withUnsafeBytes { raw in
-            let samples = raw.bindMemory(to: Int16.self)
-            let channel = buffer.floatChannelData![0]
-            for i in 0..<frames { channel[i] = Float(Int16(littleEndian: samples[i])) / 32768.0 }
-        }
-        player.scheduleBuffer(buffer)
-        if running, !player.isPlaying { player.play() }
-
-        let level = AudioMath.uiLevel(fromRMS: AudioMath.rms(pcm16: pcm24k))
-        DispatchQueue.main.async { [weak self] in
-            guard let self else { return }
-            self.currentSpeakerAmplitude = level
-            // Decay to silence when chunks stop arriving.
-            self.quietWork?.cancel()
-            let work = DispatchWorkItem { [weak self] in self?.currentSpeakerAmplitude = 0 }
-            self.quietWork = work
-            DispatchQueue.main.asyncAfter(deadline: .now() + 0.35, execute: work)
-        }
-    }
-
-    /// Barge-in: the user spoke over Charlie — drop everything queued.
-    func interruptPlayback() {
-        player.stop()
-        if running { player.play() }
-        DispatchQueue.main.async { self.currentSpeakerAmplitude = 0 }
     }
 }

@@ -94,7 +94,7 @@ public final class LiveSessionController: ObservableObject {
         case .goAway:
             status = "server ending session"
         case .turnComplete:
-            break
+            audio.flushPlayback()   // play out the sub-block tail
         }
     }
 }

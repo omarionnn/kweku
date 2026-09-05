@@ -28,6 +28,10 @@ public final class NotchController {
     private var dragStartWindowX: CGFloat = 0
     private var springHomeWork: DispatchWorkItem?
     private var springTimer: Timer?
+    private var lastDragSample: (x: CGFloat, at: TimeInterval)?
+
+    // Scroll-to-switch-mode bookkeeping.
+    private var cycler = ScrollCycler()
 
     public init(rootView: (NotchViewModel) -> AnyView) {
         window = OverlayWindow(contentRect: CGRect(origin: .zero, size: NotchGeometry.fallbackSize))
@@ -131,6 +135,32 @@ public final class NotchController {
         local(.leftMouseDragged) { [weak self] in self?.handleDrag() }
         global(.leftMouseUp) { [weak self] in self?.handleUp() }
         local(.leftMouseUp) { [weak self] in self?.handleUp() }
+
+        // Scroll over the notch cycles modes. The *local* monitor is the one
+        // that matters and needs no permission: while hovering, the overlay
+        // stops ignoring mouse events, so it sits under the cursor and macOS
+        // routes scroll wheel events to it even though the app isn't active.
+        // (A global scroll monitor would need Input Monitoring, so there
+        // isn't one.)
+        if let m = NSEvent.addLocalMonitorForEvents(matching: .scrollWheel, handler: { [weak self] e in
+            MainActor.assumeIsolated { self?.handleScroll(e) }
+            return e
+        }) { eventMonitors.append(m) }
+    }
+
+    // MARK: - Scroll to switch modes
+
+    private func handleScroll(_ event: NSEvent) {
+        guard cursorInsideNotch() else { cycler.end(); return }
+
+        // A finished swipe (or its momentum tail) re-arms for the next flip.
+        if event.phase == .ended || event.phase == .cancelled
+            || event.momentumPhase == .ended || event.momentumPhase == .cancelled {
+            cycler.end()
+            return
+        }
+        let step = cycler.feed(deltaX: event.scrollingDeltaX, deltaY: event.scrollingDeltaY)
+        if step != 0 { model.cycleSteps += step }
     }
 
     private func cursorInsideNotch() -> Bool {
@@ -176,16 +206,31 @@ public final class NotchController {
             let newX = clamp(dragStartWindowX + delta,
                              minX: scr.minX + 6, maxX: scr.maxX - window.frame.width - 6)
             window.setFrameOrigin(CGPoint(x: newX, y: window.frame.minY))
+            sampleVelocity(x: newX)
             publishCenter()
         } else {
             if machine.dragBegan() { applyState() }
         }
     }
 
+    /// Smoothed points/second, republished so the creature can lean into the
+    /// slide. Exponentially smoothed because raw frame-to-frame deltas from
+    /// mouse events are far too jittery to drive a rotation.
+    private func sampleVelocity(x: CGFloat) {
+        let now = ProcessInfo.processInfo.systemUptime
+        defer { lastDragSample = (x, now) }
+        guard let last = lastDragSample else { return }
+        let dt = now - last.at
+        guard dt > 0.001 else { return }
+        let instant = (x - last.x) / CGFloat(dt)
+        model.slideVelocity = model.slideVelocity * 0.6 + instant * 0.4
+    }
+
     private func handleUp() {
         if creatureDragging {
             creatureDragging = false
             model.isDragging = false
+            lastDragSample = nil
             scheduleSpringHome()
         } else if machine.state == .dragArmed {
             if machine.dragEnded(insideNow: cursorInsideNotch()) { applyState() }
@@ -220,6 +265,8 @@ public final class NotchController {
     private func cancelSpring() {
         springHomeWork?.cancel(); springHomeWork = nil
         springTimer?.invalidate(); springTimer = nil
+        // A cancelled slide must not leave the creature frozen mid-lean.
+        if !creatureDragging && model.slideVelocity != 0 { model.slideVelocity = 0 }
     }
 
     /// Critically-damped-ish spring returning window.x to the notch home.
@@ -239,9 +286,10 @@ public final class NotchController {
                 v += force * dt
                 x += v * dt
                 if abs(x - target) < 0.5 && abs(v) < 2 {
-                    x = target; t.invalidate(); self.springTimer = nil
+                    x = target; v = 0; t.invalidate(); self.springTimer = nil
                 }
                 self.window.setFrameOrigin(CGPoint(x: x, y: self.window.frame.minY))
+                self.model.slideVelocity = v   // creature keeps leaning as it flies home
                 self.publishCenter()
             }
         }

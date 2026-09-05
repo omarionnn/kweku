@@ -13,6 +13,11 @@ public final class MusicHub: ObservableObject {
     @Published public private(set) var enabled = false
     @Published public private(set) var now: NowPlaying = .notRunning
     @Published public private(set) var artwork: NSImage?
+    /// Accent pulled from the current cover; nil for greyscale art, where the
+    /// island stays white rather than tinting itself an arbitrary colour.
+    @Published public private(set) var accent: RGB?
+    /// Anchor for interpolating the playhead between polls.
+    @Published public private(set) var clock = PlaybackClock()
     @Published public private(set) var permissionDenied = false
 
     private var timer: Timer?
@@ -53,7 +58,9 @@ public final class MusicHub: ObservableObject {
         timer?.invalidate(); timer = nil
         now = .notRunning
         artwork = nil
+        accent = nil
         loadedArtworkURL = nil
+        clock = PlaybackClock()
         permissionDenied = false
     }
 
@@ -66,10 +73,17 @@ public final class MusicHub: ObservableObject {
         case .ok(let np):
             permissionDenied = false
             if np != now { now = np }
+            // Re-anchor every poll, not just on change: this is also what
+            // absorbs playback moving without us (scrubbed in Spotify itself,
+            // skipped from the menu bar, AirPods double-tap).
+            reanchor()
             loadArtworkIfNeeded(np)
         case .notRunning:
             permissionDenied = false
-            if now != .notRunning { now = .notRunning; artwork = nil; loadedArtworkURL = nil }
+            if now != .notRunning {
+                now = .notRunning; artwork = nil; accent = nil; loadedArtworkURL = nil
+                clock = PlaybackClock()
+            }
         case .denied:
             permissionDenied = true
         case .failed:
@@ -79,14 +93,15 @@ public final class MusicHub: ObservableObject {
 
     private func loadArtworkIfNeeded(_ np: NowPlaying) {
         guard let url = np.artworkURL else {
-            artwork = nil; loadedArtworkURL = nil; return
+            artwork = nil; accent = nil; loadedArtworkURL = nil; return
         }
         guard url.absoluteString != loadedArtworkURL else { return }
         loadedArtworkURL = url.absoluteString
         Task { [weak self] in
             guard let (data, _) = try? await URLSession.shared.data(from: url),
                   let image = NSImage(data: data) else { return }
-            await MainActor.run { self?.artwork = image }
+            let accent = AlbumPalette.accent(for: image)
+            await MainActor.run { self?.artwork = image; self?.accent = accent }
         }
     }
 
@@ -95,6 +110,7 @@ public final class MusicHub: ObservableObject {
     public func togglePlayPause() {
         SpotifyController.playPause()
         now.isPlaying.toggle()
+        reanchor()
     }
 
     public func next() { SpotifyController.next() }
@@ -104,5 +120,12 @@ public final class MusicHub: ObservableObject {
         let seconds = max(0, min(1, fraction)) * now.durationSec
         SpotifyController.seek(toSeconds: seconds)
         now.positionSec = seconds
+        reanchor()
+    }
+
+    /// Pin the clock to what we currently believe, as of now.
+    private func reanchor() {
+        clock = PlaybackClock(anchor: now.positionSec, anchoredAt: Date(),
+                              isPlaying: now.isPlaying, duration: now.durationSec)
     }
 }

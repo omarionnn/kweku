@@ -36,6 +36,14 @@ public final class NotchViewModel: ObservableObject {
     @Published public var contentDraggable: Bool = true
     /// Incremented on a plain click (down+up, no drag) inside the content.
     @Published public var tapCount: Int = 0
+    /// Running total of mode flips requested by scrolling over the notch:
+    /// `+1` per "next", `-1` per "previous". Content diffs it against the last
+    /// value it saw, so a missed update can never desynchronise the mode.
+    @Published public var cycleSteps: Int = 0
+    /// Horizontal speed of the notch window in points/second — positive
+    /// rightwards. Published while the creature is being dragged and while it
+    /// springs home, so the content can lean into the motion.
+    @Published public var slideVelocity: CGFloat = 0
 
     // MARK: Layout (content -> window)
 

@@ -8,13 +8,18 @@ import SwiftUI
 struct CreatureView: View {
     @ObservedObject var state: CreatureState
     @ObservedObject var vm: NotchViewModel
+    var rim: NotchRimStyle
     @State private var breathe = false
 
     @State private var emberPulse = false
-    @State private var liveGlow = false
 
     /// Height of the face band that hangs below the notch cutout.
     static let peek: CGFloat = 30
+
+    /// Slide speed (points/sec) at which the lean maxes out.
+    private static let leanReach: CGFloat = 1400
+    /// Degrees of body lean at full speed.
+    private static let leanDegrees: CGFloat = 13
 
     var body: some View {
         let width = vm.notchSize.width
@@ -32,28 +37,15 @@ struct CreatureView: View {
             Color.clear
             ZStack(alignment: .top) {
                 NotchPanelShape(notchWidth: width, notchHeight: cutoutH, bottom: 12).fill(Color.black)
-                // Live mode: a breathing gradient rim around the nook, glowing
-                // brighter while Kweku speaks. (Top edge hides behind the cutout.)
-                if state.liveMode {
-                    NotchPanelShape(notchWidth: width, notchHeight: cutoutH, bottom: 12)
-                        .stroke(
-                            LinearGradient(colors: [.cyan, .blue, .purple, .cyan],
-                                           startPoint: .leading, endPoint: .trailing),
-                            lineWidth: 1.8 + 2.2 * state.voiceLevel)
-                        .blur(radius: 2)
-                        .opacity((liveGlow ? 0.85 : 0.4) + 0.25 * Double(state.voiceLevel))
-                        .onAppear {
-                            liveGlow = false
-                            withAnimation(.easeInOut(duration: 1.4).repeatForever(autoreverses: true)) {
-                                liveGlow = true
-                            }
-                        }
-                        .transition(.opacity)
-                }
+                NotchRim(notchWidth: width, notchHeight: cutoutH, bottom: 12, style: rim)
                 face(eyeW: eyeW, eyeH: eyeH, pupilR: pupilR, travel: travel, eyeDX: eyeDX, eyeCY: eyeCY)
                     .frame(width: width, height: Self.peek)
                     .scaleEffect(state.popScale)
-                    .offset(y: cutoutH + (breathe ? -0.6 : 0.6))
+                    // Body leans into a sideways slide and swings back as the
+                    // spring returns it — pivoting from the cutout, so the face
+                    // hangs off the notch like a head off a neck.
+                    .rotationEffect(.degrees(lean), anchor: .top)
+                    .offset(x: -lean * 0.35, y: cutoutH + (breathe ? -0.6 : 0.6))
             }
             .frame(width: width, height: totalH)
         }
@@ -63,9 +55,17 @@ struct CreatureView: View {
         .animation(.easeInOut(duration: 0.25), value: state.capsLock)
         .animation(.spring(response: 0.34, dampingFraction: 0.72), value: state.cameraActive)
         .animation(.spring(response: 0.3, dampingFraction: 0.55), value: state.agentWaiting)
+        .animation(.spring(response: 0.28, dampingFraction: 0.62), value: vm.slideVelocity)
         .onAppear {
             withAnimation(.easeInOut(duration: 2.6).repeatForever(autoreverses: true)) { breathe = true }
         }
+    }
+
+    /// Body tilt in degrees, trailing the slide: moving right tips the face
+    /// left, as though the head lags behind the body.
+    private var lean: Double {
+        let v = min(max(vm.slideVelocity / Self.leanReach, -1), 1)
+        return Double(-v * Self.leanDegrees)
     }
 
     private func face(eyeW: CGFloat, eyeH: CGFloat, pupilR: CGFloat, travel: CGFloat,

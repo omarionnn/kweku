@@ -11,7 +11,7 @@ public final class AgentWatchHub: ObservableObject {
     private let server = AgentSocketServer()
     private let setup = AgentWatchSetup()
     private var pruneTimer: Timer?
-    private let openClaw = OpenClawBridgeManager()
+    private let openClaw = OpenClawBridgeManager.shared
     private var externalCleanup: [String: DispatchWorkItem] = [:]
 
     public init() {
@@ -65,6 +65,11 @@ public final class AgentWatchHub: ObservableObject {
     public func focusCurrent() {
         guard let target = table.focusTarget() else { return }
         TerminalFocus.focus(session: target)
+    }
+
+    /// Focus one specific session — the agent panel's row action.
+    public func focus(_ session: AgentSession) {
+        TerminalFocus.focus(session: session)
     }
 
     /// Feed a synthetic session (OpenClaw / voice dispatches) into the same

@@ -7,6 +7,18 @@ public struct AgentSession: Equatable, Sendable {
     public var pid: Int32
     public var state: AgentState
     public var lastUpdated: Date
+
+    /// Label for the agent panel: the repo/folder the session runs in. The
+    /// synthetic sessions fed in by `AgentWatchHub.noteExternal` carry no cwd,
+    /// so they fall back to a titled form of their id.
+    public var displayName: String {
+        if !cwd.isEmpty {
+            let name = (cwd as NSString).lastPathComponent
+            if !name.isEmpty && name != "/" { return name }
+        }
+        if id == "openclaw" { return "OpenClaw" }
+        return String(id.prefix(8))
+    }
 }
 
 /// Pure session bookkeeping (unit-tested): apply events, expose the aggregate
@@ -35,6 +47,22 @@ public struct AgentSessionTable: Equatable {
     public var anyWorking: Bool { sessions.values.contains { $0.state == .working } }
     public var anyWaiting: Bool { sessions.values.contains { $0.state == .waiting } }
     public var count: Int { sessions.count }
+
+    /// Display order for the agent panel: the sessions that want the user
+    /// first, then the busy ones, then the rest — each group newest-first.
+    /// `focusTarget()` is always this list's head.
+    public var ordered: [AgentSession] {
+        func rank(_ s: AgentSession) -> Int {
+            switch s.state {
+            case .waiting: return 0
+            case .working: return 1
+            case .idle: return 2
+            }
+        }
+        return sessions.values.sorted {
+            rank($0) != rank($1) ? rank($0) < rank($1) : $0.lastUpdated > $1.lastUpdated
+        }
+    }
 
     /// The session a click should focus: the most recently updated *waiting*
     /// session (it needs the user), else the most recent working one, else

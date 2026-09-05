@@ -7,6 +7,7 @@ import SwiftUI
 struct WeatherView: View {
     @ObservedObject var weather: WeatherHub
     @ObservedObject var vm: NotchViewModel
+    var rim: NotchRimStyle
 
     static let peek: CGFloat = 30
     static let expandedBody: CGFloat = 96
@@ -26,6 +27,8 @@ struct WeatherView: View {
                     NotchPanelShape(notchWidth: vm.notchSize.width, notchHeight: cutoutH,
                                     bottom: expanded ? 22 : 12)
                         .fill(Color.black)
+                    NotchRim(notchWidth: vm.notchSize.width, notchHeight: cutoutH,
+                             bottom: expanded ? 22 : 12, style: rim)
                     Group { expanded ? AnyView(expandedPanel) : AnyView(collapsedBand) }
                         .frame(width: w, height: bodyH)
                         .offset(y: cutoutH)

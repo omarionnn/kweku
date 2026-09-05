@@ -283,7 +283,7 @@ struct NotchContentRoot: View {
         let alert = NSAlert()
         alert.messageText = "Weather location"
         alert.informativeText = "Enter a city for Kweku's weather."
-        let field = NSTextField(frame: NSRect(x: 0, y: 0, width: 220, height: 24))
+        let field = EditableTextField(frame: NSRect(x: 0, y: 0, width: 220, height: 24))
         field.placeholderString = "e.g. Grand Rapids"
         alert.accessoryView = field
         alert.addButton(withTitle: "Set")
@@ -305,7 +305,7 @@ struct NotchContentRoot: View {
         let alert = NSAlert()
         alert.messageText = "Gemini API key"
         alert.informativeText = "Used only for Kweku Live (voice + screen). Stored in app preferences."
-        let field = NSSecureTextField(frame: NSRect(x: 0, y: 0, width: 260, height: 24))
+        let field = EditableSecureTextField(frame: NSRect(x: 0, y: 0, width: 260, height: 24))
         field.placeholderString = "AIza…"
         alert.accessoryView = field
         alert.addButton(withTitle: "Save")

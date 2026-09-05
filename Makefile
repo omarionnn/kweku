@@ -1,8 +1,8 @@
-APP     := Charlie
+APP     := Kweku
 SDK      = $(shell xcrun --show-sdk-path)
 DEPLOY  := 13.0
-KIT     := $(shell find Sources/CharlieKit -name '*.swift')
-MAIN    := Sources/Charlie/main.swift
+KIT     := $(shell find Sources/KwekuKit -name '*.swift')
+MAIN    := Sources/Kweku/main.swift
 ARCHES  := arm64 x86_64
 
 APPDIR  := build/$(APP).app
@@ -23,12 +23,12 @@ build:
 	  echo "==> compiling $$arch"; \
 	  odir=build/obj/$$arch; mkdir -p $$odir; \
 	  swiftc -sdk "$(SDK)" -target $$arch-apple-macos$(DEPLOY) -Osize -wmo \
-	    -parse-as-library -module-name CharlieKit \
-	    -emit-module -emit-module-path $$odir/CharlieKit.swiftmodule \
-	    -c -o $$odir/CharlieKit.o $(KIT) || exit 1; \
+	    -parse-as-library -module-name KwekuKit \
+	    -emit-module -emit-module-path $$odir/KwekuKit.swiftmodule \
+	    -c -o $$odir/KwekuKit.o $(KIT) || exit 1; \
 	  swiftc -sdk "$(SDK)" -target $$arch-apple-macos$(DEPLOY) -Osize \
-	    -I $$odir -module-name Charlie \
-	    $$odir/CharlieKit.o $(MAIN) -o $$odir/$(APP) || exit 1; \
+	    -I $$odir -module-name Kweku \
+	    $$odir/KwekuKit.o $(MAIN) -o $$odir/$(APP) || exit 1; \
 	done
 	@lipo -create -output build/universal/$(APP) \
 	  $(foreach a,$(ARCHES),build/obj/$(a)/$(APP))
@@ -36,7 +36,7 @@ build:
 
 ## Run the pure-logic tests (geometry + hit-state) via SwiftPM.
 test:
-	swift run CharlieTests
+	swift run KwekuTests
 
 ## Assemble a runnable .app bundle and ad-hoc sign it for local testing.
 ## Real distribution signing/notarization lives in notarize.sh (needs a

@@ -82,6 +82,7 @@ struct NotchContentRoot: View {
             updateSize()
         }
         .onReceive(live.audio.$currentSpeakerAmplitude) { creature.setVoice(level: $0) }
+        .onChange(of: live.running) { creature.setLive($0) }
         .onAppear {
             syncDraggable(); updateSize(); creature.apply(sensors.snapshot)
             if mode == .weather { weather.setActive(true) }

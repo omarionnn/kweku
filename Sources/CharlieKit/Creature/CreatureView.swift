@@ -11,6 +11,7 @@ struct CreatureView: View {
     @State private var breathe = false
 
     @State private var emberPulse = false
+    @State private var liveGlow = false
 
     /// Height of the face band that hangs below the notch cutout.
     static let peek: CGFloat = 30
@@ -31,6 +32,24 @@ struct CreatureView: View {
             Color.clear
             ZStack(alignment: .top) {
                 NotchPanelShape(notchWidth: width, notchHeight: cutoutH, bottom: 12).fill(Color.black)
+                // Live mode: a breathing gradient rim around the nook, glowing
+                // brighter while Charlie speaks. (Top edge hides behind the cutout.)
+                if state.liveMode {
+                    NotchPanelShape(notchWidth: width, notchHeight: cutoutH, bottom: 12)
+                        .stroke(
+                            LinearGradient(colors: [.cyan, .blue, .purple, .cyan],
+                                           startPoint: .leading, endPoint: .trailing),
+                            lineWidth: 1.8 + 2.2 * state.voiceLevel)
+                        .blur(radius: 2)
+                        .opacity((liveGlow ? 0.85 : 0.4) + 0.25 * Double(state.voiceLevel))
+                        .onAppear {
+                            liveGlow = false
+                            withAnimation(.easeInOut(duration: 1.4).repeatForever(autoreverses: true)) {
+                                liveGlow = true
+                            }
+                        }
+                        .transition(.opacity)
+                }
                 face(eyeW: eyeW, eyeH: eyeH, pupilR: pupilR, travel: travel, eyeDX: eyeDX, eyeCY: eyeCY)
                     .frame(width: width, height: Self.peek)
                     .scaleEffect(state.popScale)

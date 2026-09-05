@@ -29,8 +29,9 @@ public final class AudioEngineManager: ObservableObject {
     func start() throws {
         guard !running else { return }
         let input = engine.inputNode
-        // macOS echo cancellation so Charlie doesn't hear itself.
-        try? input.setVoiceProcessingEnabled(true)
+        // NOTE: deliberately NOT enabling setVoiceProcessingEnabled — on macOS
+        // it routinely makes input taps deliver silent buffers. Gemini's
+        // server-side VAD/barge-in copes with speaker echo.
 
         let hardware = input.outputFormat(forBus: 0)
         micConverter = AVAudioConverter(from: hardware, to: micFormat)
@@ -73,7 +74,22 @@ public final class AudioEngineManager: ObservableObject {
         }
         guard out.frameLength > 0, let channel = out.int16ChannelData?[0] else { return }
         let data = Data(bytes: channel, count: Int(out.frameLength) * 2)
+        logMicLevel(data)
         onMicChunk?(data)
+    }
+
+    // Env-gated diagnostics: CHARLIE_LIVE_DEBUG=1 -> /tmp/charlie_live.log
+    private var debugChunks = 0
+    private func logMicLevel(_ chunk: Data) {
+        guard ProcessInfo.processInfo.environment["CHARLIE_LIVE_DEBUG"] != nil else { return }
+        debugChunks += 1
+        guard debugChunks % 20 == 1 else { return }   // ~every 2s of audio
+        let line = "\(Date().timeIntervalSince1970) mic chunk#\(debugChunks) bytes=\(chunk.count) rms=\(AudioMath.rms(pcm16: chunk))\n"
+        if let h = FileHandle(forWritingAtPath: "/tmp/charlie_live.log") {
+            h.seekToEndOfFile(); h.write(Data(line.utf8)); h.closeFile()
+        } else {
+            try? line.write(toFile: "/tmp/charlie_live.log", atomically: true, encoding: .utf8)
+        }
     }
 
     // MARK: - 24 kHz PCM → playback

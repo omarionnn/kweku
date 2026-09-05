@@ -41,6 +41,13 @@ public final class CreatureState: ObservableObject {
     @Published public private(set) var agentWaiting = false
     /// Live-session speech amplitude (0…1); drives lip-sync while Charlie talks.
     @Published public private(set) var voiceLevel: CGFloat = 0
+    /// True while a Charlie Live session is active (drives the nook glow).
+    @Published public private(set) var liveMode = false
+
+    public func setLive(_ on: Bool) {
+        if on != liveMode { liveMode = on }
+        if !on { voiceLevel = 0 }
+    }
 
     // Idle thresholds (seconds of no nearby input).
     private let drowsyAfter: TimeInterval = 45

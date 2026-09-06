@@ -7,6 +7,7 @@ enum GeminiLiveTests {
         mediaFrames()
         parser()
         audioMath()
+        screenTargeting()
         shellQuote()
     }
 
@@ -158,6 +159,30 @@ enum GeminiLiveTests {
             Check.eq(Double(AudioMath.rms(pcm16: full)), 1.0, accuracy: 0.01, "full-scale ~ 1")
             Check.eq(Double(AudioMath.uiLevel(fromRMS: 0.2)), 0.7, accuracy: 0.001, "ui boost")
             Check.eq(Double(AudioMath.uiLevel(fromRMS: 0.9)), 1.0, "ui clamp")
+        }
+    }
+
+    static func screenTargeting() {
+        Check.run("front window: first layer-0 entry of the focused pid wins") {
+            let windows: [(id: UInt32, pid: Int32, layer: Int)] = [
+                (901, 500, 25),   // someone's overlay, in front but not layer 0
+                (902, 400, 0),    // another app's window
+                (903, 500, 0),    // the focused app's frontmost regular window
+                (904, 500, 0),    // same app, further back
+            ]
+            Check.ok(ScreenTargeting.frontWindowID(pid: 500, windows: windows) == 903, "picks 903")
+            Check.ok(ScreenTargeting.frontWindowID(pid: 999, windows: windows) == nil,
+                     "unknown pid -> nil (display fallback)")
+        }
+        Check.run("output size: native when small, capped with aspect when big") {
+            let small = ScreenTargeting.outputSize(for: CGSize(width: 400, height: 300))
+            Check.ok(small == (800, 600), "2x native under the cap")
+            let big = ScreenTargeting.outputSize(for: CGSize(width: 1600, height: 1000))
+            Check.ok(big == (1280, 800), "capped long edge, aspect kept")
+            let tall = ScreenTargeting.outputSize(for: CGSize(width: 500, height: 1200))
+            Check.ok(tall == (532, 1280), "portrait caps on height, even width")
+            let display = ScreenTargeting.outputSize(for: CGSize(width: 2560, height: 1664), scale: 1)
+            Check.ok(display == (1280, 832), "display fallback matches old framing")
         }
     }
 

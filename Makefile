@@ -2,38 +2,37 @@ APP     := Kweku
 SDK      = $(shell xcrun --show-sdk-path)
 DEPLOY  := 13.0
 KIT     := $(shell find Sources/KwekuKit -name '*.swift')
-MAIN    := Sources/Kweku/main.swift
+HOST    := Sources/Kweku/main.swift
 ARCHES  := arm64 x86_64
 
 APPDIR  := build/$(APP).app
 MACOS   := $(APPDIR)/Contents/MacOS
 EXEC    := $(MACOS)/$(APP)
+DYLIB   := KwekuKit.dylib
+LIBDIR   = $(HOME)/Library/Application Support/$(APP)/lib
 
-# Signing identity. Ad-hoc ("-") is the fallback, but it makes macOS derive the
-# app's designated requirement from the *binary hash*:
+# ── Why the app is split in two ───────────────────────────────────────────────
 #
-#     designated => cdhash H"f04407e5…"
+# Ad-hoc signing ("-") makes macOS derive the designated requirement from the
+# bundle's cdhash, which seals the executable, Info.plist, the entitlements and
+# CodeResources. TCC files Screen Recording / Microphone / Accessibility grants
+# against that requirement, so touching anything inside the bundle reads as a
+# brand-new app and drops every permission.
 #
-# TCC stores Screen Recording / Microphone / Accessibility grants against that
-# requirement, so every rebuild changes the hash, looks like a brand-new app,
-# and re-prompts for everything. A stable identity — even a self-signed one —
-# produces `identifier "com.kweku.app" and certificate leaf = H"…"`, which
-# survives rebuilds, so the permissions are granted once and stay granted.
+# So the bundle is *frozen*: `make host` builds it once, and the only thing in
+# it is an inert loader. All real code compiles into KwekuKit.dylib, installed
+# to ~/Library/Application Support/Kweku/lib/ — outside the bundle, outside the
+# seal. `make app` rebuilds only that, so the cdhash never moves and the grants
+# survive every rebuild. See the header comment in Sources/Kweku/main.swift.
 #
-# Create the identity once (see `make signing-identity`), then builds pick it
-# up automatically. Override with `make app CODESIGN_ID="Some Other Identity"`.
-SIGN_ID := Kweku Local Signing
-CODESIGN_ID = $(shell security find-identity -v -p codesigning 2>/dev/null \
-                | grep -q "$(SIGN_ID)" && echo "$(SIGN_ID)" || echo "-")
-
-# Universal builds via `swift build --arch` require Xcode's xcbuild, which is
-# absent with Command Line Tools only. We instead compile each slice with
-# swiftc (-Osize) and lipo them together — reliable under CLT, no deps.
-.PHONY: all build test app run size clean notarize
+# Universal builds via `swift build --arch` need Xcode's xcbuild, absent with
+# Command Line Tools only, so each slice is compiled with swiftc and lipo'd.
+# For a faster inner loop on Apple Silicon: `make app ARCHES=arm64`.
+.PHONY: all build test app host install-dylib run restart size cdhash clean dist notarize
 
 all: app
 
-## Compile the universal, size-optimised binary into build/universal/.
+## Compile the churning library — the thing you rebuild all day.
 build:
 	@mkdir -p build/universal
 	@for arch in $(ARCHES); do \
@@ -41,50 +40,97 @@ build:
 	  odir=build/obj/$$arch; mkdir -p $$odir; \
 	  swiftc -sdk "$(SDK)" -target $$arch-apple-macos$(DEPLOY) -Osize -wmo \
 	    -parse-as-library -module-name KwekuKit \
-	    -emit-module -emit-module-path $$odir/KwekuKit.swiftmodule \
-	    -c -o $$odir/KwekuKit.o $(KIT) || exit 1; \
-	  swiftc -sdk "$(SDK)" -target $$arch-apple-macos$(DEPLOY) -Osize \
-	    -I $$odir -module-name Kweku \
-	    $$odir/KwekuKit.o $(MAIN) -o $$odir/$(APP) || exit 1; \
+	    -emit-library -o $$odir/$(DYLIB) $(KIT) || exit 1; \
 	done
-	@lipo -create -output build/universal/$(APP) \
-	  $(foreach a,$(ARCHES),build/obj/$(a)/$(APP))
-	@echo "==> universal binary: build/universal/$(APP)"
+	@lipo -create -output build/universal/$(DYLIB) \
+	  $(foreach a,$(ARCHES),build/obj/$(a)/$(DYLIB))
+	@strip -x build/universal/$(DYLIB) || true
+	@# lipo discards the ad-hoc signature the linker applies, and arm64 refuses
+	@# to dlopen unsigned code — so re-sign. This is outside the app bundle and
+	@# does not affect its cdhash.
+	@codesign --force --sign - build/universal/$(DYLIB)
+	@echo "==> universal library: build/universal/$(DYLIB)"
+
+## Install the library where the frozen host looks for it. Replaced by rename
+## so a running Kweku keeps the copy it already mapped instead of crashing.
+install-dylib: build
+	@mkdir -p "$(LIBDIR)"
+	@chmod 700 "$(LIBDIR)"
+	@cp build/universal/$(DYLIB) "$(LIBDIR)/.$(DYLIB).new"
+	@mv -f "$(LIBDIR)/.$(DYLIB).new" "$(LIBDIR)/$(DYLIB)"
+	@echo "==> installed $(LIBDIR)/$(DYLIB)"
 
 ## Run the pure-logic tests (geometry + hit-state) via SwiftPM.
 test:
 	swift run KwekuTests
 
-## Assemble a runnable .app bundle and ad-hoc sign it for local testing.
-## Real distribution signing/notarization lives in notarize.sh (needs a
-## Developer ID identity, which this environment lacks).
-app: build
+## Everyday build: library only. The bundle — and every permission granted to
+## it — is left exactly as it was.
+app: install-dylib
+	@if [ ! -d "$(APPDIR)" ]; then \
+	  echo "==> no frozen bundle yet, building one"; \
+	  $(MAKE) --no-print-directory host; \
+	else \
+	  echo "==> bundle untouched, cdhash unchanged, permissions preserved"; \
+	fi
+
+## Build and FREEZE the app bundle. Run this once. Every later run re-hashes
+## the bundle and costs one round of re-granting Screen Recording / Mic /
+## Accessibility — so only when main.swift, Info.plist or the entitlements
+## actually change.
+host:
+	@mkdir -p build/universal
+	@for arch in $(ARCHES); do \
+	  echo "==> compiling host $$arch"; \
+	  odir=build/obj/$$arch; mkdir -p $$odir; \
+	  swiftc -sdk "$(SDK)" -target $$arch-apple-macos$(DEPLOY) -Osize \
+	    -module-name $(APP) $(HOST) -o $$odir/$(APP) || exit 1; \
+	done
+	@lipo -create -output build/universal/$(APP) \
+	  $(foreach a,$(ARCHES),build/obj/$(a)/$(APP))
 	rm -rf "$(APPDIR)"
 	mkdir -p "$(MACOS)" "$(APPDIR)/Contents/Resources"
 	cp Resources/Info.plist "$(APPDIR)/Contents/Info.plist"
 	cp build/universal/$(APP) "$(EXEC)"
 	strip -STx "$(EXEC)" || true
-	codesign --force --deep --sign $(CODESIGN_ID) --entitlements Resources/$(APP).entitlements "$(APPDIR)"
-	@echo "Built $(APPDIR)"
-	@if [ "$(CODESIGN_ID)" = "-" ]; then \
-	  echo "!! ad-hoc signed: macOS will re-prompt for Screen Recording / Mic"; \
-	  echo "!! after every rebuild. Run 'make signing-identity' to fix for good."; \
-	fi
+	codesign --force --sign - --entitlements Resources/$(APP).entitlements "$(APPDIR)"
+	@echo
+	@echo "!! Bundle re-frozen at a new identity — macOS sees a new app, so"
+	@echo "!! Screen Recording / Microphone / Accessibility need granting once more."
+	@$(MAKE) --no-print-directory cdhash
 
-## Launch the bundled app.
-run: app
-	open "$(APPDIR)"
+## Print the frozen identity. Rerun after `make app` — it must not change.
+cdhash:
+	@codesign -d --verbose=4 "$(APPDIR)" 2>&1 | grep -E '^CDHash|^Signature' || true
+	@codesign -d -r- "$(APPDIR)" 2>&1 | grep 'designated' || true
 
-## Report the stripped mach-o size and arch slices (2 MB budget).
+## Rebuild, then restart the running app so the new library is actually loaded.
+run: app restart
+
+restart:
+	@pkill -x $(APP) 2>/dev/null || true
+	@sleep 0.5
+	@open "$(APPDIR)"
+	@echo "==> $(APP) restarted"
+
+## Report stripped sizes and arch slices (2 MB budget).
 size: app
-	@echo "== $(APP) binary size =="
-	@ls -l "$(EXEC)" | awk '{printf "%s bytes (%.3f MB)\n", $$5, $$5/1048576}'
-	@lipo -info "$(EXEC)"
+	@echo "== $(APP) sizes =="
+	@ls -l "$(EXEC)" build/universal/$(DYLIB) \
+	  | awk '{printf "%-12s %s bytes (%.3f MB)\n", $$9, $$5, $$5/1048576}'
+	@lipo -info "$(EXEC)" build/universal/$(DYLIB)
 
 clean:
 	swift package clean 2>/dev/null || true
 	rm -rf build
 
+## Distribution bundle: library sealed *inside*, which is correct once a real
+## certificate makes the requirement cert-based rather than a hash. Needs a
+## Developer ID identity, which this environment doesn't have.
+dist: build host
+	cp build/universal/$(DYLIB) "$(APPDIR)/Contents/Resources/$(DYLIB)"
+	codesign --force --deep --sign - --entitlements Resources/$(APP).entitlements "$(APPDIR)"
+
 ## Developer ID sign + notarize + staple (requires credentials).
-notarize: app
+notarize: dist
 	./notarize.sh "$(APPDIR)"

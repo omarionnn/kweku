@@ -1,61 +1,65 @@
 # Kweku
 
-**Omari's personal notch companion.** This is the little tool I keep running all
-day on my MacBook while I build things — not a product, not something I support,
-just my daily driver. It's tuned to my machine, my keybindings and my workflow,
-and it will have sharp edges for anyone else. I'm putting it on GitHub because
-it's mine and I like having it here, not because it's meant to be installed by
-the world.
+**Kweku is my coding colleague.** It lives in the MacBook notch and works
+alongside me all day — watching the agents I have running, telling me when one
+needs a decision, reading what's on my screen and handing a broken build straight
+to a coding agent, keeping my music and my sessions a glance away. It started as a
+face in the notch and turned into the teammate I actually reach for while I build.
 
-It turns the MacBook notch into a live companion: a small creature lives in the
-cutout and reacts to what my machine — and the AI coding agents I run — are
-doing. Scroll over the notch to cycle what it shows.
+I'm keeping it on GitHub to track how it grows and to share what I use every day.
 
 <!-- A screenshot/gif of the notch in action lives well here. -->
 
 ---
 
-## What it does
+## How I use it, day to day
+
+- I usually have a few coding agents going. Kweku watches them for me: when one
+  finishes it tells me what it actually changed, and when one is stuck waiting on
+  my call, its eyes turn into exclamation marks so I notice without babysitting a
+  terminal. A click jumps me straight to the session that wants me.
+- When something breaks on screen, I don't retype the error — I hit the command
+  line in the notch and "fix what's on screen," and Kweku reads the foreground
+  window and hands the failure to an agent.
+- When I want to think out loud, `⌥⌘K` starts a voice + screen-vision session, so
+  I can talk through a problem and have it act on what I'm looking at.
+- Music runs all day, so Spotify sits in the notch as a Dynamic-Island — album
+  art, scrubber, transport — and the little creature rides along next to it. Open
+  it while agents are running and the agent panel stacks right under the music.
+- Files I want to hold onto go on the shelf by dragging them at the notch; weather
+  and system stats are a scroll away when I want them.
+
+## Kweku itself
 
 A menu-bar (`LSUIElement`) app — no Dock icon, no window, it just lives in the
-notch.
+notch. Scroll over the notch to cycle what it shows.
 
-- **The creature.** A face in the nook that's genuinely reactive: eyes track the
-  cursor, it leans into a sideways drag, narrows its eyes while a tool runs, wears
-  an ember while an agent is working, drifts violet motes while one is thinking,
-  turns its eyes into exclamation marks when an agent is *waiting on me*, puts on
-  shades when the camera turns on, and lip-syncs during a voice session. It also
-  reads charging and caps-lock off the system.
+- **The face.** Genuinely reactive: eyes track the cursor, it leans into a
+  sideways drag, narrows its eyes while a tool runs, wears an ember while an agent
+  works, drifts violet motes while one is thinking, throws up exclamation eyes when
+  an agent is waiting on me, puts on shades when the camera turns on, and lip-syncs
+  during a voice session. It also reads charging and caps-lock off the system.
 
-- **Spotify, Dynamic-Island style.** When music is playing the notch grows into an
-  island — album art on the left, the creature riding in the right wing, so I get
-  **music and the critter at once**. Hovering opens a full card: art, scrolling
-  title, scrubber and transport, all tinted with an accent pulled off the cover.
-  Open it while agents are running and the agent panel stacks underneath —
-  **music and agents in one glance.**
+- **Agent watch.** A socket server tracks my running sessions (omp / OpenClaw /
+  Claude) with a per-session identity line, flips the face to "waiting" when one
+  needs me, and a "pit crew" reports what each finished agent changed.
 
-- **Agent watch.** A socket server tracks the coding-agent sessions I have going
-  (omp / OpenClaw / Claude), surfaces them in a hover panel with a per-session
-  identity line, flips the creature to "waiting" eyes when one needs me, and
-  click-to-focus jumps me to the right terminal. A "pit crew" reports what a
-  finished agent actually changed.
+- **Spotify island.** Album art on the left, the creature in the right wing —
+  music and the critter at once. Hovering opens a full card tinted with an accent
+  pulled off the cover; open while agents run and the agent panel stacks below.
 
-- **Live session.** A voice + screen-vision companion (Gemini Live) — mic, speaker,
-  a stream of the focused window, and tool dispatch into a coding-agent gateway.
-  `⌥⌘K` starts and stops it from anywhere. Captions hang under the notch.
+- **Live session.** Voice + focused-window vision (Gemini Live) with tool dispatch
+  into a coding-agent gateway. `⌥⌘K` toggles it from anywhere; captions hang under
+  the notch.
 
-- **Command line.** Type at Kweku instead of talking to it: a prompt line in the
-  notch, a send, and a "fix what's on screen" that reads the foreground window and
-  hands the failure straight to a coding agent.
+- **Command line.** Type at Kweku instead of talking to it — a prompt in the
+  notch, a send, and "fix what's on screen."
 
-- **Shelf.** Drag files onto the notch to stash them; drag them back out later.
-  Persists across launches.
+- **Shelf, weather, stats.** Drag files onto the notch to stash and retrieve them;
+  local weather (Open-Meteo + CoreLocation) and a system-stats panel are two more
+  scroll-to modes.
 
-- **Weather & stats.** Two more nook modes — local weather (Open-Meteo +
-  CoreLocation, manual-city fallback) and a system-stats panel.
-
-Modes cycle by scrolling over the notch. On a Mac without a physical notch it
-draws a synthetic pill under the menu bar instead.
+On a Mac without a physical notch it draws a synthetic pill under the menu bar.
 
 ## Build & run
 
@@ -75,21 +79,15 @@ Recording / Microphone / Accessibility grants to the bundle's hash, so any chang
 inside the seal would forget every permission. Rebuilding only the dylib
 (`make app`) leaves the hash — and every grant — untouched. Editing `main.swift`,
 `Info.plist` or the entitlements needs `make host`, which re-freezes the bundle
-and costs one round of re-granting permissions. See the header of
-`Sources/Kweku/main.swift` for the full story.
+and re-asks for permissions once. The header of `Sources/Kweku/main.swift` tells
+the whole story.
 
 ## Layout
 
 - `Sources/Kweku/` — the inert frozen host; finds the dylib and jumps in.
-- `Sources/KwekuKit/` — everything that actually does the work, one directory per
-  concern: `Creature/`, `Music/`, `AgentWatch/`, `Live/`, `Command/`, `Shelf/`,
-  `Weather/`, `Sensors/`, `NotchWindow/`, `App/`.
+- `Sources/KwekuKit/` — everything that does the work, one directory per concern:
+  `Creature/`, `Music/`, `AgentWatch/`, `Live/`, `Command/`, `Shelf/`, `Weather/`,
+  `Sensors/`, `NotchWindow/`, `App/`.
 - `Tests/KwekuTests/` — pure-logic checks (geometry, playback clock, palette,
-  gateway protocol, …) run via `swift run KwekuTests`. Layout is deliberately not
-  unit-tested; it's eyeballed on the actual notch.
-
-## Status
-
-Personal tool. It changes when I want it to, breaks when I'm mid-experiment, and
-comes with no promises. If you found this: hi — it's mine, and it's exactly the
-notch I want to look at all day.
+  gateway protocol, …) run via `swift run KwekuTests`. Layout is eyeballed on the
+  real notch rather than unit-tested.

@@ -55,6 +55,7 @@ struct CreatureView: View {
         .animation(.easeInOut(duration: 0.25), value: state.capsLock)
         .animation(.spring(response: 0.34, dampingFraction: 0.72), value: state.cameraActive)
         .animation(.spring(response: 0.3, dampingFraction: 0.55), value: state.agentWaiting)
+        .animation(.easeInOut(duration: 0.45), value: state.agentActivity)
         .animation(.spring(response: 0.28, dampingFraction: 0.62), value: vm.slideVelocity)
         .onAppear {
             withAnimation(.easeInOut(duration: 2.6).repeatForever(autoreverses: true)) { breathe = true }
@@ -68,23 +69,67 @@ struct CreatureView: View {
         return Double(-v * Self.leanDegrees)
     }
 
+    /// The ember under the chin, tinted to match whichever rim is running.
+    /// Thinking has no ember — it has motes instead.
+    private var emberColour: Color? {
+        switch state.agentActivity {
+        case .tooling:    return NotchRim.amber
+        case .responding: return NotchRim.teal
+        case .thinking, nil: return nil
+        }
+    }
+
+    /// Motes: slow violet specks rising through the empty band either side of
+    /// the face while an agent reasons. Driven from a clock rather than
+    /// `repeatForever` so they stay in step with the rim's aurora and can't
+    /// drift out of phase across the window resizes the notch does constantly.
+    private var motes: some View {
+        // Keep them off the face and inside the panel on narrow notches.
+        let reach = max(20, vm.notchSize.width / 2 - 8)
+        return TimelineView(.animation(minimumInterval: 1.0 / 20.0)) { context in
+            let t = context.date.timeIntervalSinceReferenceDate
+            ZStack {
+                ForEach(0..<6, id: \.self) { i in
+                    let seed = Double(i) * 2.3
+                    let period = 5.5 + Double(i % 3) * 2.2
+                    let p = CGFloat((((t + seed * 3) / period)
+                        .truncatingRemainder(dividingBy: 1) + 1)
+                        .truncatingRemainder(dividingBy: 1))
+                    let side: CGFloat = i % 2 == 0 ? -1 : 1
+                    Circle()
+                        .fill(NotchRim.violet)
+                        .frame(width: 2.4, height: 2.4)
+                        .blur(radius: 0.7)
+                        // Fade in and out at the ends of the climb, so they
+                        // arrive and leave rather than blink.
+                        .opacity(0.8 * Double(sin(p * .pi)))
+                        .offset(x: side * min(24 + CGFloat(i / 2) * 13, reach)
+                                   + CGFloat(sin(t * 0.9 + seed)) * 3,
+                                y: 14 - 26 * p)
+                }
+            }
+        }
+    }
+
     private func face(eyeW: CGFloat, eyeH: CGFloat, pupilR: CGFloat, travel: CGFloat,
                       eyeDX: CGFloat, eyeCY: CGFloat) -> some View {
         ZStack {
-            // Amber ember: pulses while any coding-agent session is working.
-            if state.agentWorking {
+            // Thinking gets motes drifting in the empty band either side of
+            // the face; the busier phases get an ember under the chin, in the
+            // same colour their rim is wearing.
+            if state.agentActivity == .thinking {
+                motes.transition(.opacity)
+            } else if let ember = emberColour {
                 Circle()
-                    .fill(RadialGradient(
-                        colors: [Color(red: 1.0, green: 0.68, blue: 0.25).opacity(0.85),
-                                 Color(red: 1.0, green: 0.5, blue: 0.1).opacity(0)],
-                        center: .center, startRadius: 0, endRadius: 11))
+                    .fill(RadialGradient(colors: [ember.opacity(0.85), ember.opacity(0)],
+                                         center: .center, startRadius: 0, endRadius: 11))
                     .frame(width: 22, height: 22)
                     .scaleEffect(emberPulse ? 1.25 : 0.8)
                     .opacity(emberPulse ? 1.0 : 0.55)
                     .offset(y: eyeCY + eyeH * 0.85)
                     .onAppear {
                         emberPulse = false
-                        withAnimation(.easeInOut(duration: 0.9).repeatForever(autoreverses: true)) {
+                        withAnimation(.easeInOut(duration: 0.7).repeatForever(autoreverses: true)) {
                             emberPulse = true
                         }
                     }
@@ -108,9 +153,12 @@ struct CreatureView: View {
                 exclaim(eyeH: eyeH).offset(x: eyeDX, y: eyeCY)
                     .transition(.scale.combined(with: .opacity))
             } else {
-                eye(eyeW: eyeW, eyeH: eyeH, pupilR: pupilR, travel: travel, open: state.eyeOpenAmount)
+                // Eyes narrow while a tool runs — the face of watching
+                // something happen rather than deciding what to do.
+                let open = state.eyeOpenAmount * (state.agentActivity == .tooling ? 0.72 : 1)
+                eye(eyeW: eyeW, eyeH: eyeH, pupilR: pupilR, travel: travel, open: open)
                     .offset(x: -eyeDX, y: eyeCY)
-                eye(eyeW: eyeW, eyeH: eyeH, pupilR: pupilR, travel: travel, open: state.eyeOpenAmount)
+                eye(eyeW: eyeW, eyeH: eyeH, pupilR: pupilR, travel: travel, open: open)
                     .offset(x: eyeDX, y: eyeCY)
             }
 

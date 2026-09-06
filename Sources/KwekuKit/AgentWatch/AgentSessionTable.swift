@@ -6,7 +6,26 @@ public struct AgentSession: Equatable, Sendable {
     public var cwd: String
     public var pid: Int32
     public var state: AgentState
+    /// Time of the last event of any kind — drives display order.
     public var lastUpdated: Date
+    /// Time this session entered its current `state`. Separate from
+    /// `lastUpdated` so the panel's "how long has it been busy" reading isn't
+    /// reset every time a tool starts within the same working turn.
+    public var stateSince: Date
+    /// What this session is spending its turn on; nil unless it's working.
+    public var activity: AgentActivity?
+    /// Tool in flight, when `activity == .tooling`.
+    public var tool: String?
+
+    /// The row label for the session's current phase, e.g. "Bash", "thinking".
+    public var activityLabel: String? {
+        switch activity {
+        case .tooling:    return tool ?? "running a tool"
+        case .thinking:   return "thinking"
+        case .responding: return "answering"
+        case nil:         return nil
+        }
+    }
 
     /// Label for the agent panel: the repo/folder the session runs in. The
     /// synthetic sessions fed in by `AgentWatchHub.noteExternal` carry no cwd,
@@ -36,9 +55,15 @@ public struct AgentSessionTable: Equatable {
         }
         var s = sessions[event.sessionID] ?? AgentSession(
             id: event.sessionID, cwd: event.cwd, pid: event.pid,
-            state: event.state, lastUpdated: now)
+            state: event.state, lastUpdated: now, stateSince: now)
+        if s.state != event.state { s.stateSince = now }
         s.state = event.state
         s.lastUpdated = now
+        // Emitters that report coarse state only (the omp extension) send
+        // `working` with no activity; read that as thinking rather than as
+        // "unknown", so the rim always has something calm to show.
+        s.activity = event.activity ?? (event.state == .working ? .thinking : nil)
+        s.tool = event.tool
         if !event.cwd.isEmpty { s.cwd = event.cwd }
         if event.pid > 0 { s.pid = event.pid }
         sessions[event.sessionID] = s
@@ -47,6 +72,25 @@ public struct AgentSessionTable: Equatable {
     public var anyWorking: Bool { sessions.values.contains { $0.state == .working } }
     public var anyWaiting: Bool { sessions.values.contains { $0.state == .waiting } }
     public var count: Int { sessions.count }
+
+    /// The activity the notch should wear: what the most salient working
+    /// session is doing. Ranked rather than newest-first so that two agents
+    /// trading events can't make the rim flicker between phases.
+    public var activity: AgentActivity? {
+        sessions.values
+            .filter { $0.state == .working }
+            .compactMap(\.activity)
+            .min { $0.rank < $1.rank }
+    }
+
+    /// Name of the tool behind a `.tooling` rim, for the panel's row label.
+    public var activeTool: String? {
+        guard activity == .tooling else { return nil }
+        return sessions.values
+            .filter { $0.state == .working && $0.activity == .tooling }
+            .sorted { $0.lastUpdated > $1.lastUpdated }
+            .first?.tool
+    }
 
     /// Display order for the agent panel: the sessions that want the user
     /// first, then the busy ones, then the rest — each group newest-first.

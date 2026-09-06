@@ -100,12 +100,33 @@ public struct AgentWatchSetup {
     except Exception: pass' 
     """#
 
-    public static let claudeHookEvents = ["SessionStart", "Notification", "Stop", "SubagentStop", "SessionEnd"]
+    /// Lifecycle hooks (which session, and whose turn it is).
+    public static let claudeLifecycleEvents = ["SessionStart", "Notification", "Stop",
+                                               "SubagentStop", "SessionEnd"]
+    /// Turn-shape hooks. These are what give the notch a real *thinking →
+    /// running a tool → thinking* rhythm; without them every turn is one
+    /// undifferentiated "working" and the rim has nothing to say.
+    static let claudeTurnEvents = ["UserPromptSubmit", "PreToolUse", "PostToolUse"]
 
+    public static let claudeHookEvents = claudeLifecycleEvents + claudeTurnEvents
+
+    /// True only when *every* hook we install is present. Checking for the
+    /// marker anywhere would report a partial install from an older build as
+    /// done, and the tool hooks would never arrive.
     public var claudeInstalled: Bool {
         guard let data = try? Data(contentsOf: claudeSettingsFile),
-              let text = String(data: data, encoding: .utf8) else { return false }
-        return text.contains(Self.claudeMarker)
+              let root = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+              let hooks = root["hooks"] as? [String: Any] else { return false }
+        return Self.claudeHookEvents.allSatisfy { Self.hasMarker(in: hooks[$0]) }
+    }
+
+    /// Does this event's matcher list already carry our hook command?
+    static func hasMarker(in entry: Any?) -> Bool {
+        ((entry as? [[String: Any]]) ?? []).contains { matcher in
+            ((matcher["hooks"] as? [[String: Any]]) ?? []).contains {
+                ($0["command"] as? String)?.contains(claudeMarker) == true
+            }
+        }
     }
 
     /// Merge our hooks into settings.json, preserving everything already there.
@@ -117,17 +138,19 @@ public struct AgentWatchSetup {
             root = existing
         }
         var hooks = (root["hooks"] as? [String: Any]) ?? [:]
-        let entry: [String: Any] = [
+        let command: [String: Any] = [
             "hooks": [["type": "command", "command": Self.claudeCommand]]
         ]
+        // The tool hooks are matcher-scoped in Claude's schema; "*" is every
+        // tool. The lifecycle hooks take no matcher.
+        var toolEntry = command
+        toolEntry["matcher"] = "*"
+
         for event in Self.claudeHookEvents {
             var matchers = (hooks[event] as? [[String: Any]]) ?? []
-            let present = matchers.contains { m in
-                ((m["hooks"] as? [[String: Any]]) ?? []).contains {
-                    ($0["command"] as? String)?.contains(Self.claudeMarker) == true
-                }
+            if !Self.hasMarker(in: hooks[event]) {
+                matchers.append(["PreToolUse", "PostToolUse"].contains(event) ? toolEntry : command)
             }
-            if !present { matchers.append(entry) }
             hooks[event] = matchers
         }
         root["hooks"] = hooks

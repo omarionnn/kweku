@@ -13,6 +13,8 @@ public enum GeminiServerEvent: Equatable, Sendable {
     case heardTranscript(text: String, interim: Bool)
     /// What Kweku is saying, for the caption ticker.
     case spokenTranscript(text: String)
+    /// Fresh session-resumption handle; store the latest and reconnect with it.
+    case resumptionHandle(String)
 }
 
 /// Pure wire-format builders + parser for the Gemini Live (BidiGenerateContent)
@@ -36,12 +38,18 @@ public enum GeminiLiveProtocol {
 
     /// Session setup: model, AUDIO responses, system instruction, tools
     /// (OpenClaw dispatcher + omp executor + Google Search).
-    public static func setup(model: String, system: String = systemInstruction) -> Data {
+    public static func setup(model: String, system: String = systemInstruction,
+                             resumeHandle: String? = nil) -> Data {
+        var resumption: [String: Any] = [:]
+        if let resumeHandle { resumption["handle"] = resumeHandle }
         let frame: [String: Any] = [
             "setup": [
                 "model": model,
                 "generationConfig": ["responseModalities": ["AUDIO"]],
                 "systemInstruction": ["parts": [["text": system]]],
+                // Ask for periodic resumption handles so a dropped/limited
+                // connection can continue the same conversation.
+                "sessionResumption": resumption,
                 // Empty config = automatic language detection. Enables the
                 // caption ticker: without these the server sends audio only.
                 "inputAudioTranscription": [String: String](),
@@ -134,6 +142,11 @@ public enum GeminiLiveProtocol {
 
         if obj["setupComplete"] != nil { events.append(.setupComplete) }
         if obj["goAway"] != nil { events.append(.goAway) }
+        if let update = obj["sessionResumptionUpdate"] as? [String: Any],
+           (update["resumable"] as? Bool) == true,
+           let handle = update["newHandle"] as? String, !handle.isEmpty {
+            events.append(.resumptionHandle(handle))
+        }
 
         if let content = obj["serverContent"] as? [String: Any] {
             if (content["interrupted"] as? Bool) == true { events.append(.interrupted) }

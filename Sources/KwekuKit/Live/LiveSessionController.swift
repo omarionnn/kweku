@@ -29,6 +29,11 @@ public final class LiveSessionController: ObservableObject {
     private let screen = ScreenCaptureManager()
     private let client = GeminiLiveClient()
 
+    // A+B memory: rolling local transcript + session-resumption handle.
+    private var memory = ConversationMemory()
+    private var resumeHandle: String?
+    private var reconnectAttempts = 0
+
     /// Supplied by the content root: cwd of the most relevant agent session.
     public var ompCwdProvider: () -> String? = { nil }
     /// Feed voice-dispatched work into the agent table (ember/bang states).
@@ -62,12 +67,9 @@ public final class LiveSessionController: ObservableObject {
 
         client.onEvent = { [weak self] event in self?.handle(event) }
         client.onClose = { [weak self] reason in
-            MainActor.assumeIsolated {
-                self?.status = "closed: \(reason)"
-                self?.stop()
-            }
+            MainActor.assumeIsolated { self?.connectionClosed(reason) }
         }
-        client.connect(apiKey: key, model: Self.model)
+        connectSocket(fresh: true)
         // Handshake the gateway now so the first dispatch isn't paying for a
         // cold connect mid-sentence.
         OpenClawBridgeManager.shared.warmUp()
@@ -106,14 +108,50 @@ public final class LiveSessionController: ObservableObject {
         client.disconnect()
         running = false
         clearTranscripts()
+        memory.save()
     }
 
-    // MARK: - Event routing
+    /// Wipe Kweku's long-term conversational memory (menu action).
+    public func forgetConversations() {
+        memory.clear()
+    }
 
+    /// Connect (or reconnect) the Gemini socket. `fresh` starts a new
+    /// conversation seeded with the memory recap; a reconnect passes the
+    /// resumption handle so the server restores the same session.
+    private func connectSocket(fresh: Bool) {
+        guard let key = Self.apiKey else { return }
+        let system = GeminiLiveProtocol.systemInstruction + (memory.recap() ?? "")
+        client.connect(apiKey: key, model: Self.model,
+                       system: system,
+                       resumeHandle: fresh ? nil : resumeHandle)
+    }
+
+    /// Dropped socket: resume in place when we hold a handle (10-min server
+    /// caps, network blips). Gives up after 3 consecutive failures.
+    private func connectionClosed(_ reason: String) {
+        guard running else { return }
+        if resumeHandle != nil, reconnectAttempts < 3 {
+            reconnectAttempts += 1
+            status = "resuming session (\(reconnectAttempts))"
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.6) { [weak self] in
+                MainActor.assumeIsolated {
+                    guard let self, self.running else { return }
+                    self.connectSocket(fresh: false)
+                }
+            }
+        } else {
+            status = "closed: \(reason)"
+            stop()
+        }
+    }
     private func handle(_ event: GeminiServerEvent) {
         switch event {
         case .setupComplete:
             status = "live"
+            reconnectAttempts = 0
+        case .resumptionHandle(let handle):
+            resumeHandle = handle
         case .audio(let pcm):
             audio.enqueuePlayback(pcm)
         case .interrupted:
@@ -136,10 +174,12 @@ public final class LiveSessionController: ObservableObject {
             } else {
                 heard = heardIsInterim ? text : heard + text
                 heardIsInterim = false
+                memory.append(role: "Omari", fragment: text)
             }
 
         case .spokenTranscript(let text):
             caption += text
+            memory.append(role: "Kweku", fragment: text)
         case .toolCall(let id, let name, let args):
             let cwd = ompCwdProvider()
             Task { [weak self] in
@@ -160,6 +200,7 @@ public final class LiveSessionController: ObservableObject {
         case .turnComplete:
             audio.flushPlayback()        // play out the sub-block tail
             screen.noteUserTurn()        // user's turn: next frame is fresh
+            memory.save()                // cheap; keeps memory crash-safe
             // Deliberately *not* clearing the caption here. `turnComplete`
             // means the model finished generating, not that Omari finished
             // hearing it — the speaker is usually still playing the tail.

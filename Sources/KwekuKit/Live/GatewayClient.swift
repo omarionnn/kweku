@@ -32,7 +32,7 @@ public final class GatewayClient {
     private var status: Status = .offline
     private var running = false
     private var nextRequestId = 0
-    private var reconnectDelay: TimeInterval = 1
+    private var policy = ReconnectPolicy()
 
     /// Requests we're waiting on, by frame id.
     private var pendingRequests: [String: (GatewayPayload) -> Void] = [:]
@@ -78,7 +78,7 @@ public final class GatewayClient {
     private func openSocket() {
         guard running else { return }
         guard let token = GatewayCredentials.token() else {
-            set(.unauthorized)
+            retryUnauthorized()
             return
         }
         set(.connecting)
@@ -98,8 +98,27 @@ public final class GatewayClient {
         task = nil
         set(.offline)
         failAllRuns(.disconnected)
-        let delay = reconnectDelay
-        reconnectDelay = min(delay * 2, 60)
+        retry(after: policy.next())
+    }
+
+    /// The token was missing from disk, or the gateway refused it.
+    ///
+    /// Deliberately *not* terminal. Kweku usually launches before the gateway,
+    /// `openclaw.json` can be read mid-rewrite, and the token may be rotated
+    /// while the app runs — all three are transient. This path used to just
+    /// return, which left `running == true` with nothing scheduled: one bad
+    /// read killed the bridge until the app was relaunched. Surface the state
+    /// for the UI, then keep trying on a slower clock than a dropped socket.
+    private func retryUnauthorized() {
+        guard running else { return }
+        task?.cancel(with: .goingAway, reason: nil)
+        task = nil
+        set(.unauthorized)
+        failAllRuns(.unauthorized)
+        retry(after: policy.next(unauthorized: true))
+    }
+
+    private func retry(after delay: TimeInterval) {
         queue.asyncAfter(deadline: .now() + delay) { self.openSocket() }
     }
 
@@ -207,12 +226,14 @@ public final class GatewayClient {
                 if case .helloOK = payload {
                     self.transmit(GatewayProtocol.subscribe(id: self.nextId(),
                                                             sessionKey: self.sessionKey))
-                    self.reconnectDelay = 1
+                    self.policy.reset()
                     self.set(.ready)
                     self.drainBacklog()
                 } else if case .error = payload {
-                    self.set(.unauthorized)
+                    // Answer anything already queued before tearing the socket
+                    // down, so a waiting voice turn hears why it failed.
                     self.drainBacklog(failingWith: .unauthorized)
+                    self.retryUnauthorized()
                 }
             }
             transmit(GatewayProtocol.connect(id: id, token: token, version: version))
@@ -278,6 +299,29 @@ public final class GatewayClient {
         runs.removeAll()
         for (_, handler) in active { handler.onTerminal(.failure(error)) }
     }
+}
+
+/// Exponential backoff for reconnects, kept pure so the retry contract is
+/// testable without a live gateway — the defect this guards against (a
+/// credential failure that never retried) was invisible until relaunch.
+struct ReconnectPolicy {
+    static let baseDelay: TimeInterval = 1
+    static let maxDelay: TimeInterval = 60
+    /// Credential failures start slower: re-reading a config file every second
+    /// is pointless, and hammering the gateway with a bad token is worse.
+    static let unauthorizedFloor: TimeInterval = 5
+
+    private(set) var delay: TimeInterval = baseDelay
+
+    /// The delay to wait *now*, doubling what the next caller will get.
+    mutating func next(unauthorized: Bool = false) -> TimeInterval {
+        let current = unauthorized ? Swift.max(delay, Self.unauthorizedFloor) : delay
+        delay = Swift.min(current * 2, Self.maxDelay)
+        return current
+    }
+
+    /// Called on a successful handshake so a later blip starts fast again.
+    mutating func reset() { delay = Self.baseDelay }
 }
 
 /// Failure modes worth telling the user about out loud.

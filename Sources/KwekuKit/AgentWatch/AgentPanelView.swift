@@ -114,13 +114,21 @@ struct AgentPanelView: View {
     private func row(_ session: AgentSession, now: Date) -> some View {
         Button { agents.focus(session) } label: {
             HStack(spacing: 8) {
-                dot(for: session.state)
+                dot(for: session)
                 Text(session.displayName)
                     .font(.system(size: 11, weight: .medium))
                     .foregroundStyle(.white.opacity(0.9))
                     .lineLimit(1).truncationMode(.middle)
+                // What it's doing right now, in the phase's own colour — the
+                // detail the rim can only gesture at.
+                if let label = session.activityLabel {
+                    Text(label)
+                        .font(.system(size: 9, weight: .medium))
+                        .foregroundStyle(AgentPanelView.tint(session).opacity(0.85))
+                        .lineLimit(1).truncationMode(.tail)
+                }
                 Spacer(minLength: 6)
-                Text(AgentPanelFormat.elapsed(since: session.lastUpdated, now: now))
+                Text(AgentPanelFormat.elapsed(since: session.stateSince, now: now))
                     .font(.system(size: 9, weight: .medium, design: .monospaced))
                     .foregroundStyle(.white.opacity(0.4))
                     .monospacedDigit()
@@ -133,17 +141,35 @@ struct AgentPanelView: View {
     }
 
     @ViewBuilder
-    private func dot(for state: AgentState) -> some View {
-        switch state {
+    private func dot(for session: AgentSession) -> some View {
+        switch session.state {
         case .working:
-            // Breathing amber while the agent has the floor.
-            PulsingDot(color: NotchRim.amber)
+            // Breathing in the phase's colour while the agent has the floor.
+            PulsingDot(color: Self.tint(session))
         case .waiting:
-            Circle().fill(Color(red: 0.42, green: 0.83, blue: 0.55)).frame(width: 6, height: 6)
+            Circle().fill(Self.ready).frame(width: 6, height: 6)
         case .idle:
             Circle().fill(Color.white.opacity(0.22)).frame(width: 6, height: 6)
         }
     }
+
+    /// The colour standing for a session's phase — the same palette the rim
+    /// wears, so panel and outline never disagree about what's going on.
+    static func tint(_ session: AgentSession) -> Color {
+        switch session.state {
+        case .waiting: return ready
+        case .idle:    return .white.opacity(0.22)
+        case .working:
+            switch session.activity {
+            case .tooling:       return NotchRim.amber
+            case .responding:    return NotchRim.teal
+            case .thinking, nil: return NotchRim.violet
+            }
+        }
+    }
+
+    /// Finished, and the ball is in your court.
+    static let ready = Color(red: 0.42, green: 0.83, blue: 0.55)
 
     /// Compact "time in this state" label (pure — unit-tested).
     public static func elapsed(since: Date, now: Date) -> String {
@@ -189,20 +215,12 @@ struct AgentBandView: View {
                     .font(.system(size: 10)).foregroundStyle(.white.opacity(0.45))
             } else {
                 ForEach(sessions.prefix(4), id: \.id) { session in
-                    Circle().fill(tint(session.state)).frame(width: 5, height: 5)
+                    Circle().fill(AgentPanelView.tint(session)).frame(width: 5, height: 5)
                 }
                 Text(summary(sessions))
                     .font(.system(size: 11, weight: .semibold, design: .rounded))
                     .foregroundStyle(.white)
             }
-        }
-    }
-
-    private func tint(_ state: AgentState) -> Color {
-        switch state {
-        case .working: return NotchRim.amber
-        case .waiting: return Color(red: 0.42, green: 0.83, blue: 0.55)
-        case .idle:    return .white.opacity(0.22)
         }
     }
 

@@ -69,7 +69,8 @@ struct NotchContentRoot: View {
         NotchRimStyle.resolve(attention: creature.agentWaiting,
                               live: live.running,
                               voiceLevel: creature.voiceLevel,
-                              working: creature.agentWorking)
+                              working: creature.agentWorking,
+                              activity: creature.agentActivity)
     }
 
     var body: some View {
@@ -100,8 +101,9 @@ struct NotchContentRoot: View {
         .onChange(of: music.now) { _ in syncDraggable(); updateSize() }
         .onChange(of: music.showing) { _ in syncDraggable(); updateSize() }
         .onChange(of: sensors.snapshot) { creature.apply($0) }
-        .onChange(of: agents.table) { _ in
-            creature.setAgents(working: agents.anyWorking, waiting: agents.anyWaiting)
+        .onChange(of: agents.table) { table in
+            creature.setAgents(working: agents.anyWorking, waiting: agents.anyWaiting,
+                               activity: table.activity)
             updateSize()
         }
         .onChange(of: vm.tapCount) { _ in
@@ -340,6 +342,7 @@ struct NotchContentRoot: View {
             Button("Live: \(live.status)") {}.disabled(true)
         }
         Button("Set Gemini API Key…") { promptForGeminiKey() }
+        Button("Forget Conversations") { live.forgetConversations() }
         Divider()
         Button(action: { agents.runSetup() }) {
             Label("Set Up Agent Watch", systemImage: agents.setupDone ? "checkmark" : "")

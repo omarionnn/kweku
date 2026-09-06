@@ -32,6 +32,35 @@ enum AgentWatchTests {
             let sub = AgentEvent.parse(#"{"session_id":"abc","cwd":"/y","hook_event_name":"SubagentStop","pid":9}"#)
             Check.ok(sub?.state == .working, "SubagentStop -> parent still working")
         }
+        Check.run("claude tool hooks carry the turn's phase") {
+            let ask = AgentEvent.parse(
+                #"{"session_id":"a","cwd":"/y","hook_event_name":"UserPromptSubmit","pid":9}"#)
+            Check.ok(ask?.state == .working && ask?.activity == .thinking, "prompt -> thinking")
+            let pre = AgentEvent.parse(
+                #"{"session_id":"a","cwd":"/y","hook_event_name":"PreToolUse","tool_name":"Bash","pid":9}"#)
+            Check.ok(pre?.activity == .tooling && pre?.tool == "Bash", "PreToolUse -> tooling(Bash)")
+            let post = AgentEvent.parse(
+                #"{"session_id":"a","cwd":"/y","hook_event_name":"PostToolUse","tool_name":"Bash","pid":9}"#)
+            Check.ok(post?.activity == .thinking && post?.tool == nil,
+                     "PostToolUse -> back to thinking, tool cleared")
+            let stop = AgentEvent.parse(
+                #"{"session_id":"a","cwd":"/y","hook_event_name":"Stop","pid":9}"#)
+            Check.ok(stop?.activity == nil, "an activity means nothing once it's waiting")
+        }
+        Check.run("native line carries activity + tool") {
+            let e = AgentEvent.parse(
+                #"{"session_id":"7","cwd":"/x","pid":7,"state":"working","activity":"tooling","tool":"grep"}"#)
+            Check.ok(e?.activity == .tooling && e?.tool == "grep", "parsed")
+            let bad = AgentEvent.parse(
+                #"{"session_id":"7","cwd":"/x","pid":7,"state":"working","activity":"nonsense"}"#)
+            Check.ok(bad?.state == .working && bad?.activity == nil, "unknown activity ignored, not fatal")
+        }
+        Check.run("maps gateway phases onto activities") {
+            Check.ok(AgentActivity.fromPhase("running_tool") == .tooling, "tool")
+            Check.ok(AgentActivity.fromPhase("exec_command") == .tooling, "exec")
+            Check.ok(AgentActivity.fromPhase("streaming") == .responding, "stream")
+            Check.ok(AgentActivity.fromPhase("starting_model") == .thinking, "unknown -> calm default")
+        }
         Check.run("rejects garbage") {
             Check.ok(AgentEvent.parse("not json") == nil, "non-json")
             Check.ok(AgentEvent.parse(#"{"foo":1}"#) == nil, "unknown shape")
@@ -64,6 +93,49 @@ enum AgentWatchTests {
             Check.ok(t.focusTarget()?.id == "w1", "working beats newer idle")
             t.apply(AgentEvent(sessionID: "n1", cwd: "/3", pid: 3, state: .waiting), at: t0 + 1)
             Check.ok(t.focusTarget()?.id == "n1", "waiting beats working")
+        }
+        Check.run("table shows the most salient activity") {
+            var t = AgentSessionTable()
+            t.apply(AgentEvent(sessionID: "a", cwd: "/a", pid: 1, state: .working,
+                               activity: .thinking), at: t0)
+            Check.ok(t.activity == .thinking, "one thinker")
+            t.apply(AgentEvent(sessionID: "b", cwd: "/b", pid: 2, state: .working,
+                               activity: .tooling, tool: "Bash"), at: t0 + 1)
+            Check.ok(t.activity == .tooling && t.activeTool == "Bash",
+                     "a running tool outranks thinking")
+            // Order of arrival must not matter — ranking, not recency.
+            t.apply(AgentEvent(sessionID: "a", cwd: "/a", pid: 1, state: .working,
+                               activity: .thinking), at: t0 + 2)
+            Check.ok(t.activity == .tooling, "still the tool")
+            t.apply(AgentEvent(sessionID: "b", cwd: "/b", pid: 2, state: .waiting), at: t0 + 3)
+            Check.ok(t.activity == .thinking && t.activeTool == nil, "tool finished")
+        }
+        Check.run("coarse 'working' reads as thinking") {
+            var t = AgentSessionTable()
+            t.apply(AgentEvent(sessionID: "omp", cwd: "/a", pid: 1, state: .working), at: t0)
+            Check.ok(t.activity == .thinking, "no activity reported -> the calm default")
+        }
+        Check.run("stateSince ignores same-state churn") {
+            var t = AgentSessionTable()
+            t.apply(AgentEvent(sessionID: "a", cwd: "/a", pid: 1, state: .working,
+                               activity: .thinking), at: t0)
+            t.apply(AgentEvent(sessionID: "a", cwd: "/a", pid: 1, state: .working,
+                               activity: .tooling, tool: "Read"), at: t0 + 30)
+            Check.ok(t.sessions["a"]?.stateSince == t0, "still busy since t0")
+            Check.ok(t.sessions["a"]?.lastUpdated == t0 + 30, "but heard from just now")
+            t.apply(AgentEvent(sessionID: "a", cwd: "/a", pid: 1, state: .waiting), at: t0 + 60)
+            Check.ok(t.sessions["a"]?.stateSince == t0 + 60, "resets on a real state change")
+        }
+        Check.run("labels the phase for the panel") {
+            var t = AgentSessionTable()
+            t.apply(AgentEvent(sessionID: "a", cwd: "/a", pid: 1, state: .working,
+                               activity: .tooling, tool: "Bash"), at: t0)
+            Check.ok(t.sessions["a"]?.activityLabel == "Bash", "named tool")
+            t.apply(AgentEvent(sessionID: "a", cwd: "/a", pid: 1, state: .working,
+                               activity: .tooling), at: t0)
+            Check.ok(t.sessions["a"]?.activityLabel == "running a tool", "unnamed tool")
+            t.apply(AgentEvent(sessionID: "a", cwd: "/a", pid: 1, state: .waiting), at: t0)
+            Check.ok(t.sessions["a"]?.activityLabel == nil, "nothing to say while waiting")
         }
         Check.run("prune drops dead and stale sessions") {
             var t = AgentSessionTable()
@@ -140,6 +212,32 @@ enum AgentWatchTests {
             let markers = again.components(separatedBy: "kweku-agent-watch").count - 1
             Check.ok(markers == AgentWatchSetup.claudeHookEvents.count,
                      "one entry per event after re-run (got \(markers))")
+            Check.ok(out.contains("PreToolUse") && out.contains("PostToolUse"),
+                     "tool hooks installed — without them there's no phase to show")
+        }
+
+        Check.run("a partial install from an older build isn't reported as done") {
+            let file = tmp.appendingPathComponent("claude-partial/settings.json")
+            try? FileManager.default.createDirectory(at: file.deletingLastPathComponent(),
+                                                     withIntermediateDirectories: true)
+            // Only the lifecycle hooks, as an earlier Kweku would have left it.
+            var old: [String: Any] = [:]
+            for event in AgentWatchSetup.claudeLifecycleEvents {
+                old[event] = [["hooks": [["type": "command",
+                                          "command": "python3 -c pass  # kweku-agent-watch"]]]]
+            }
+            let data = try? JSONSerialization.data(withJSONObject: ["hooks": old])
+            try? data?.write(to: file)
+            let setup = AgentWatchSetup(
+                ompExtensionsDir: tmp.appendingPathComponent("omp-ext3"),
+                claudeSettingsFile: file)
+            Check.ok(!setup.claudeInstalled, "missing tool hooks -> not installed")
+            Check.ok(setup.installClaude(), "top-up merge succeeds")
+            Check.ok(setup.claudeInstalled, "complete now")
+            let out = (try? String(contentsOf: file, encoding: .utf8)) ?? ""
+            let markers = out.components(separatedBy: "kweku-agent-watch").count - 1
+            Check.ok(markers == AgentWatchSetup.claudeHookEvents.count,
+                     "topped up without duplicating (got \(markers))")
         }
     }
 }

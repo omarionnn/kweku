@@ -12,6 +12,40 @@ enum GatewayProtocolTests {
         runEvents()
         isolation()
         trimming()
+        reconnectBackoff()
+    }
+
+    // MARK: - Reconnect policy
+
+    static func reconnectBackoff() {
+        Check.run("a credential failure always yields another attempt") {
+            var policy = ReconnectPolicy()
+            // The regression this pins: `openSocket` used to return without
+            // scheduling anything when the token read came back nil, so the
+            // bridge stayed dead until Kweku was relaunched.
+            for _ in 0..<20 {
+                Check.ok(policy.next(unauthorized: true) > 0, "every retry has a real delay")
+            }
+            Check.ok(policy.delay <= ReconnectPolicy.maxDelay, "backoff stays capped")
+        }
+
+        Check.run("credential retries start slower than dropped sockets") {
+            var creds = ReconnectPolicy()
+            var socket = ReconnectPolicy()
+            Check.ok(creds.next(unauthorized: true) >= ReconnectPolicy.unauthorizedFloor,
+                     "unauthorized honours its floor")
+            Check.ok(socket.next() == ReconnectPolicy.baseDelay, "a dropped socket retries fast")
+        }
+
+        Check.run("backoff grows, caps, and resets on a good handshake") {
+            var policy = ReconnectPolicy()
+            Check.ok(policy.next() == 1, "first wait is the base delay")
+            Check.ok(policy.next() == 2, "then doubles")
+            for _ in 0..<10 { _ = policy.next() }
+            Check.ok(policy.next() == ReconnectPolicy.maxDelay, "saturates at the ceiling")
+            policy.reset()
+            Check.ok(policy.next() == ReconnectPolicy.baseDelay, "helloOK makes the next blip fast")
+        }
     }
 
     // MARK: - Client → gateway

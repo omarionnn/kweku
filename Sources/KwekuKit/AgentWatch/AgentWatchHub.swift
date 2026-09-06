@@ -44,7 +44,11 @@ public final class AgentWatchHub: ObservableObject {
         openClaw.listenForBackgroundEvents { [weak self] event in
             MainActor.assumeIsolated {
                 switch event.kind {
-                case .working: self?.noteExternal(id: "openclaw", state: .working)
+                case .working:
+                    // A working event's summary *is* the gateway's status
+                    // phase, so it can pick the notch's phase too.
+                    self?.noteExternal(id: "openclaw", state: .working,
+                                       activity: .fromPhase(event.summary))
                 case .attention: self?.noteExternal(id: "openclaw", state: .waiting)
                 case .info: break
                 }
@@ -75,8 +79,10 @@ public final class AgentWatchHub: ObservableObject {
     /// Feed a synthetic session (OpenClaw / voice dispatches) into the same
     /// table so ember/bang reactions and priority apply uniformly. `waiting`
     /// entries self-clean after 2 minutes.
-    public func noteExternal(id: String, state: AgentState) {
-        table.apply(AgentEvent(sessionID: id, cwd: "", pid: 0, state: state))
+    public func noteExternal(id: String, state: AgentState,
+                             activity: AgentActivity? = nil) {
+        table.apply(AgentEvent(sessionID: id, cwd: "", pid: 0, state: state,
+                               activity: activity))
         externalCleanup[id]?.cancel()
         guard state == .waiting else { externalCleanup[id] = nil; return }
         let work = DispatchWorkItem { [weak self] in

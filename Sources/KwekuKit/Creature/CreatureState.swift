@@ -35,8 +35,11 @@ public final class CreatureState: ObservableObject {
     @Published public private(set) var earTwitch: CGFloat = 0
 
     // MARK: Agent-watch reactions
-    /// Any coding-agent session working → amber ember pulse.
+    /// Any coding-agent session working → the nook lights up.
     @Published public private(set) var agentWorking = false
+    /// *What* that work is: thinking, running a tool, or answering. Drives
+    /// both the rim's temperament and the creature's own face.
+    @Published public private(set) var agentActivity: AgentActivity?
     /// Any session waiting on the user → periodic downward glance.
     @Published public private(set) var agentWaiting = false
     /// Live-session speech amplitude (0…1); drives lip-sync while Kweku talks.
@@ -63,6 +66,7 @@ public final class CreatureState: ObservableObject {
     private var yawnWork: DispatchWorkItem?
     private var twitchWork: DispatchWorkItem?
     private var bangWork: DispatchWorkItem?
+    private var ponderWork: DispatchWorkItem?
     private var tableWaiting = false
     private var typingTimer: Timer?
     private var typingNow = false
@@ -128,6 +132,7 @@ public final class CreatureState: ObservableObject {
     deinit {
         blinkWork?.cancel(); drowsyWork?.cancel(); asleepWork?.cancel()
         saccadeWork?.cancel(); yawnWork?.cancel(); twitchWork?.cancel(); bangWork?.cancel()
+        ponderWork?.cancel()
         typingTimer?.invalidate()
     }
 
@@ -138,8 +143,12 @@ public final class CreatureState: ObservableObject {
     /// shows exclamation-mark eyes for 10 seconds (wake + pop so it's
     /// noticed), then the face returns to normal even if the session is
     /// still waiting. A fresh waiting transition re-triggers the flash.
-    public func setAgents(working: Bool, waiting: Bool) {
+    ///
+    /// `activity` refines *working*: it selects the creature's demeanour
+    /// (pondering upward while it reasons, narrow-eyed while a tool runs).
+    public func setAgents(working: Bool, waiting: Bool, activity: AgentActivity? = nil) {
         if working != agentWorking { agentWorking = working }
+        setActivity(working ? (activity ?? .thinking) : nil)
         guard waiting != tableWaiting else { return }
         tableWaiting = waiting
         bangWork?.cancel(); bangWork = nil
@@ -155,6 +164,43 @@ public final class CreatureState: ObservableObject {
             DispatchQueue.main.asyncAfter(deadline: .now() + 10, execute: work)
         } else {
             agentWaiting = false
+        }
+    }
+
+    private func setActivity(_ next: AgentActivity?) {
+        guard next != agentActivity else { return }
+        agentActivity = next
+        if next == .thinking {
+            schedulePonder()
+        } else {
+            ponderWork?.cancel(); ponderWork = nil
+            scheduleSaccade()               // hand the gaze back to idle drift
+        }
+    }
+
+    // MARK: - Pondering (the slow look away while an agent reasons)
+
+    /// While a session is *thinking*, the creature's eyes wander slowly
+    /// upward — where anyone's eyes go while they think — instead of the
+    /// quick idle saccades. Deliberately unhurried: it's the one phase with
+    /// nothing to report, so it should read as patience, not activity.
+    private func schedulePonder() {
+        ponderWork?.cancel()
+        guard agentActivity == .thinking, mood != .asleep else { return }
+        let work = DispatchWorkItem { [weak self] in
+            MainActor.assumeIsolated { self?.ponder() }
+        }
+        ponderWork = work
+        DispatchQueue.main.asyncAfter(deadline: .now() + Double.random(in: 2.2...3.8), execute: work)
+    }
+
+    private func ponder() {
+        defer { schedulePonder() }
+        guard agentActivity == .thinking, mood == .awake, !typingNow else { return }
+        // Don't override a cursor the user is actively moving.
+        guard Date().timeIntervalSince(lastCursorMove) > 1.0 else { return }
+        withAnimation(.easeInOut(duration: 1.2)) {
+            gaze = CGSize(width: .random(in: -0.7...0.7), height: .random(in: -0.85 ... -0.4))
         }
     }
 
@@ -337,11 +383,11 @@ public final class CreatureState: ObservableObject {
         if waking { pop() }
         switch next {
         case .awake:
-            scheduleBlink(); scheduleSaccade()
+            scheduleBlink(); scheduleSaccade(); schedulePonder()
         case .drowsy:
             scheduleBlink()
         case .asleep:
-            blinkWork?.cancel(); saccadeWork?.cancel()
+            blinkWork?.cancel(); saccadeWork?.cancel(); ponderWork?.cancel()
         }
     }
 
@@ -365,7 +411,10 @@ public final class CreatureState: ObservableObject {
     }
 
     private func saccade() {
-        guard mood == .awake, !typingNow else { return }
+        guard mood == .awake else { return }
+        // Typing and pondering each own the gaze while they last; skip the
+        // beat but keep the loop alive so drift resumes when they're done.
+        guard !typingNow, agentActivity != .thinking else { scheduleSaccade(); return }
         // Don't fight an actively-moving cursor.
         if Date().timeIntervalSince(lastCursorMove) > 1.0 {
             gaze = CGSize(width: .random(in: -0.5...0.5), height: .random(in: -0.35...0.35))

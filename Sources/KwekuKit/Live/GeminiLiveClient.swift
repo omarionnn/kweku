@@ -12,7 +12,9 @@ final class GeminiLiveClient {
     var onEvent: ((GeminiServerEvent) -> Void)?
     var onClose: ((String) -> Void)?
 
-    func connect(apiKey: String, model: String) {
+    func connect(apiKey: String, model: String,
+                 system: String = GeminiLiveProtocol.systemInstruction,
+                 resumeHandle: String? = nil) {
         guard var components = URLComponents(string: GeminiLiveProtocol.endpointBase) else { return }
         components.queryItems = [URLQueryItem(name: "key", value: apiKey)]
         guard let url = components.url else { return }
@@ -21,7 +23,7 @@ final class GeminiLiveClient {
         let task = URLSession.shared.webSocketTask(with: url)
         self.task = task
         task.resume()
-        send(GeminiLiveProtocol.setup(model: model))
+        send(GeminiLiveProtocol.setup(model: model, system: system, resumeHandle: resumeHandle))
         receiveLoop()
     }
 

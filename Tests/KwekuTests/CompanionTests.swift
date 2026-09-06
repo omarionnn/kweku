@@ -63,8 +63,11 @@ enum CompanionTests {
                                         commits: ["Fix reply mismatch"], branch: "main")
             let prompt = AgentReport.prompt(for: [(session, work)], now: now)
 
-            Check.ok(prompt.contains("Omari, I'd like to report that"),
-                     "opens the way he asked to be addressed")
+            Check.ok(AgentReport.openers.contains { prompt.contains($0) },
+                     "opens with one of the openers")
+            Check.ok(prompt.contains("Omari"), "addresses him by name")
+            Check.ok(prompt.contains("must not read like the same sentence"),
+                     "tells the model not to recite a form letter")
             Check.ok(prompt.contains("sk-triage"), "names the project")
             Check.ok(prompt.contains("claude"), "names the harness")
             Check.ok(prompt.contains("14 files"), "carries the evidence")
@@ -81,6 +84,114 @@ enum CompanionTests {
             Check.ok(bare.contains("no file changes it could find"),
                      "says it found nothing rather than implying nothing happened")
         }
+
+        Check.run("consecutive reports don't open with the same sentence") {
+            // The complaint that started this: every announcement was the same
+            // words with the numbers swapped. One prescribed opener guarantees
+            // that, and the model can't vary it by itself — it has no memory of
+            // the previous report to differ from.
+            let base = Date(timeIntervalSince1970: 6_000_000)
+            let session = AgentSession(id: "a", cwd: "/Users/o/notch", pid: 1,
+                                       state: .waiting, lastUpdated: base,
+                                       stateSince: base.addingTimeInterval(-120),
+                                       source: "claude")
+            let openers = (0..<40).map { step -> String in
+                let now = base.addingTimeInterval(Double(step) * 37)
+                let work = AgentReport.Work(files: step, insertions: step * 3, branch: "main")
+                let prompt = AgentReport.prompt(for: [(session, work)], now: now)
+                return AgentReport.openers.first { prompt.contains($0) } ?? "none"
+            }
+            Check.ok(!openers.contains("none"), "every prompt carries a known opener")
+            Check.ok(Set(openers).count >= 3, "the opener actually rotates")
+
+            // Same facts at the same instant must still read the same way, or
+            // a regenerated report would contradict itself.
+            let work = AgentReport.Work(files: 2, branch: "main")
+            Check.ok(AgentReport.prompt(for: [(session, work)], now: base)
+                     == AgentReport.prompt(for: [(session, work)], now: base),
+                     "the rotation is deterministic, not random")
+        }
+
+        Check.run("only files born during the session count as new") {
+            guard let repo = TempRepo(commit: false) else {
+                return Check.ok(false, "could not create a temp repo")
+            }
+            defer { repo.remove() }
+
+            // Pre-existing, never-committed clutter — the 68-file case. Old
+            // enough that no session should be credited with it.
+            repo.write("AGENTS.md", born: repo.start.addingTimeInterval(-86_400))
+            repo.write("SOUL.md", born: repo.start.addingTimeInterval(-86_400))
+
+            var work = AgentReport.read(cwd: repo.path, since: repo.start)
+            Check.ok(work != nil, "an unborn-HEAD repo is still a repo")
+            Check.ok(work?.untracked == 0, "long-standing untracked files aren't new work")
+            Check.ok(AgentReport.summary(work ?? .init()) == nil,
+                     "so there is nothing to report, rather than a stale constant")
+
+            repo.write("Fix.swift", born: repo.start.addingTimeInterval(30))
+            work = AgentReport.read(cwd: repo.path, since: repo.start)
+            Check.ok(work?.untracked == 1, "a file created after the session started counts")
+            Check.ok(AgentReport.summary(work ?? .init())?.contains("1 new file") == true,
+                     "and it is reported singular")
+        }
+
+        Check.run("a repo with no commits reads without failing") {
+            // `git diff HEAD` and `git log` both error on an unborn HEAD, which
+            // zeroed every dynamic field and left the report with one clause.
+            guard let repo = TempRepo(commit: false) else {
+                return Check.ok(false, "could not create a temp repo")
+            }
+            defer { repo.remove() }
+            repo.write("Staged.swift", born: repo.start.addingTimeInterval(10),
+                       contents: "let a = 1\nlet b = 2\n")
+            repo.git(["add", "Staged.swift"])
+
+            let work = AgentReport.read(cwd: repo.path, since: repo.start)
+            Check.ok(work?.files == 1, "staged work is measured against the empty tree")
+            Check.ok(work?.insertions == 2, "and carries real line counts")
+            Check.ok(work?.commits.isEmpty == true, "no commits to quote, and no crash")
+            Check.ok(work?.branch != nil, "the branch of an unborn HEAD is still readable")
+        }
+    }
+
+    /// A throwaway git repo, so the git-reading paths are tested against git
+    /// rather than against a hand-built `Work`.
+    struct TempRepo {
+        let path: String
+        let start: Date
+
+        init?(commit: Bool) {
+            let url = FileManager.default.temporaryDirectory
+                .appendingPathComponent("kweku-report-\(UUID().uuidString)")
+            guard (try? FileManager.default.createDirectory(
+                at: url, withIntermediateDirectories: true)) != nil else { return nil }
+            path = url.path
+            // Static, not the instance helper: `start` isn't initialized yet.
+            _ = AgentReport.git(["init", "-q", "-b", "main"], cwd: url.path)
+            _ = AgentReport.git(["config", "user.email", "t@t"], cwd: url.path)
+            _ = AgentReport.git(["config", "user.name", "t"], cwd: url.path)
+            if commit {
+                _ = AgentReport.git(["commit", "-q", "--allow-empty", "-m", "root"], cwd: url.path)
+            }
+            start = Date()
+        }
+
+        func write(_ name: String, born: Date, contents: String = "x\n") {
+            let file = URL(fileURLWithPath: path).appendingPathComponent(name)
+            try? contents.write(to: file, atomically: true, encoding: .utf8)
+            // Both keys, because `untrackedFiles` prefers creation date and
+            // falls back to modification date.
+            try? FileManager.default.setAttributes(
+                [.creationDate: born, .modificationDate: born], ofItemAtPath: file.path)
+        }
+
+        @discardableResult
+        func git(_ arguments: [String]) -> String? {
+            AgentReport.git(arguments, cwd: path)
+        }
+
+        func remove() { try? FileManager.default.removeItem(atPath: path) }
     }
 
     // MARK: - 1. Redaction

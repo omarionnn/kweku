@@ -41,6 +41,21 @@ public enum TerminalFocus {
         NSRunningApplication(processIdentifier: pid)?.activationPolicy == .regular
     }
 
+    /// Display name of the app that owns `pid` ("Terminal", "iTerm2", …);
+    /// nil for headless sessions. Cached — the panel asks every tick and the
+    /// answer is a chain of sysctls that never changes for a live pid.
+    @MainActor private static var appNameCache: [Int32: String?] = [:]
+
+    @MainActor
+    public static func owningAppName(of pid: Int32) -> String? {
+        guard pid > 0 else { return nil }
+        if let cached = appNameCache[pid] { return cached }
+        let name = owningApp(from: pid, parent: realParent(of:), isApp: isRegularApp(_:))
+            .flatMap { NSRunningApplication(processIdentifier: $0)?.localizedName }
+        appNameCache[pid] = name
+        return name
+    }
+
     // MARK: - Focus
 
     /// Raise the terminal window owning `session`. Returns false when no

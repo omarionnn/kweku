@@ -58,17 +58,6 @@ public enum GatewayProtocol {
     /// desktop/chat client land in the *same* conversation context.
     public static let defaultSessionKey = "agent:main:main"
 
-    /// The same gateway as a browsable Control UI address — where a click on a
-    /// waiting OpenClaw session goes, since it has no terminal to raise.
-    /// Derived from `defaultURL` rather than written out a second time, so the
-    /// socket and the page can't drift onto different hosts or ports.
-    public static var dashboardURL: URL {
-        var parts = URLComponents(url: defaultURL, resolvingAgainstBaseURL: false)
-        parts?.scheme = (defaultURL.scheme == "wss") ? "https" : "http"
-        parts?.path = "/"
-        return parts?.url ?? URL(string: "http://127.0.0.1:18789/")!
-    }
-
     // MARK: - Client → gateway frames
 
     /// Handshake reply. `client.id`/`client.mode` are closed enums server-side;

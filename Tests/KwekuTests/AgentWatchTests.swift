@@ -24,22 +24,34 @@ enum AgentWatchTests {
             Check.ok(session(id: "a", pid: 4321, state: .waiting).destination == .terminal(pid: 4321),
                      "there's a window to raise")
         }
-        Check.run("the gateway session routes to the Control UI") {
-            // The regression: this is the session behind almost every
-            // exclamation-eye flash, it has no process, and sending it through
-            // the terminal walk from pid 0 could only ever fail silently.
+        Check.run("the gateway session is recognised as having no window") {
+            // This is the session behind almost every exclamation-eye flash.
+            // It's a headless child of the OpenClaw LaunchAgent: no terminal,
+            // no window, and a terminal walk from pid 0 could only ever fail.
             Check.ok(session(id: "openclaw", pid: 0, state: .waiting).destination == .gateway,
-                     "no process, but it has an address")
+                     "named, so the click can explain itself instead of failing mute")
         }
         Check.run("anything else is honestly unreachable") {
             Check.ok(session(id: "ghost", pid: 0, state: .waiting).destination == .unreachable,
                      "so the click can say so instead of doing nothing")
         }
-        Check.run("the Control UI address tracks the socket's host and port") {
-            let dash = GatewayProtocol.dashboardURL
-            Check.ok(dash.scheme == "http", "browsable scheme, got \(dash.scheme ?? "nil")")
-            Check.ok(dash.host == GatewayProtocol.defaultURL.host, "same host")
-            Check.ok(dash.port == GatewayProtocol.defaultURL.port, "same port")
+        Check.run("a reachable session wins the click over a headless one") {
+            var t = AgentSessionTable()
+            let t0 = Date(timeIntervalSince1970: 1_700_000_000)
+            // The gateway session is newer, but it has nowhere to take you.
+            t.apply(AgentEvent(sessionID: "term", cwd: "/repo", pid: 4321, state: .waiting), at: t0)
+            t.apply(AgentEvent(sessionID: "openclaw", cwd: "", pid: 0, state: .waiting), at: t0 + 30)
+            Check.ok(t.focusTarget()?.id == "term", "click goes where it can actually land")
+            Check.ok(t.ordered.first?.id == t.focusTarget()?.id,
+                     "the panel's head still agrees with the click")
+        }
+        Check.run("reachability never outranks needing the user") {
+            var t = AgentSessionTable()
+            let t0 = Date(timeIntervalSince1970: 1_700_000_000)
+            t.apply(AgentEvent(sessionID: "busy", cwd: "/repo", pid: 4321, state: .working), at: t0)
+            t.apply(AgentEvent(sessionID: "openclaw", cwd: "", pid: 0, state: .waiting), at: t0)
+            Check.ok(t.focusTarget()?.id == "openclaw",
+                     "a waiting session is still the answer, reachable or not")
         }
     }
 
@@ -136,6 +148,33 @@ enum AgentWatchTests {
             Check.ok(AgentActivity.fromPhase("exec_command") == .tooling, "exec")
             Check.ok(AgentActivity.fromPhase("streaming") == .responding, "stream")
             Check.ok(AgentActivity.fromPhase("starting_model") == .thinking, "unknown -> calm default")
+        }
+        Check.run("identity: source survives the wire and the table") {
+            let omp = AgentEvent.parse(
+                #"{"v":1,"source":"omp","session_id":"1","cwd":"/x","pid":1,"state":"working"}"#)
+            Check.ok(omp?.source == "omp", "native line keeps source")
+            let claude = AgentEvent.parse(
+                #"{"session_id":"c","cwd":"/y","hook_event_name":"Stop","pid":9}"#)
+            Check.ok(claude?.source == "claude", "hook format implies claude")
+
+            var t = AgentSessionTable()
+            t.apply(omp!)
+            Check.ok(t.sessions["1"]?.sourceLabel == "omp", "table carries it")
+            // A later coarse event without a source must not erase identity.
+            t.apply(AgentEvent(sessionID: "1", cwd: "/x", pid: 1, state: .waiting))
+            Check.ok(t.sessions["1"]?.sourceLabel == "omp", "identity sticks across events")
+        }
+        Check.run("identity: labels fall back sensibly") {
+            var t = AgentSessionTable()
+            t.apply(AgentEvent(sessionID: AgentSession.gatewayID, cwd: "", pid: 0, state: .working))
+            Check.ok(t.sessions[AgentSession.gatewayID]?.sourceLabel == "openclaw",
+                     "gateway id -> openclaw")
+            t.apply(AgentEvent(sessionID: "xyz", cwd: "/r", pid: 42, state: .idle))
+            Check.ok(t.sessions["xyz"]?.sourceLabel == "terminal", "undeclared -> terminal")
+            Check.ok(AgentPanelFormat.identity(source: "omp", app: "Terminal") == "omp · Terminal",
+                     "with app")
+            Check.ok(AgentPanelFormat.identity(source: "openclaw", app: nil) == "openclaw",
+                     "headless has no app half")
         }
         Check.run("rejects garbage") {
             Check.ok(AgentEvent.parse("not json") == nil, "non-json")

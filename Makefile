@@ -9,6 +9,23 @@ APPDIR  := build/$(APP).app
 MACOS   := $(APPDIR)/Contents/MacOS
 EXEC    := $(MACOS)/$(APP)
 
+# Signing identity. Ad-hoc ("-") is the fallback, but it makes macOS derive the
+# app's designated requirement from the *binary hash*:
+#
+#     designated => cdhash H"f04407e5…"
+#
+# TCC stores Screen Recording / Microphone / Accessibility grants against that
+# requirement, so every rebuild changes the hash, looks like a brand-new app,
+# and re-prompts for everything. A stable identity — even a self-signed one —
+# produces `identifier "com.kweku.app" and certificate leaf = H"…"`, which
+# survives rebuilds, so the permissions are granted once and stay granted.
+#
+# Create the identity once (see `make signing-identity`), then builds pick it
+# up automatically. Override with `make app CODESIGN_ID="Some Other Identity"`.
+SIGN_ID := Kweku Local Signing
+CODESIGN_ID = $(shell security find-identity -v -p codesigning 2>/dev/null \
+                | grep -q "$(SIGN_ID)" && echo "$(SIGN_ID)" || echo "-")
+
 # Universal builds via `swift build --arch` require Xcode's xcbuild, which is
 # absent with Command Line Tools only. We instead compile each slice with
 # swiftc (-Osize) and lipo them together — reliable under CLT, no deps.
@@ -47,8 +64,12 @@ app: build
 	cp Resources/Info.plist "$(APPDIR)/Contents/Info.plist"
 	cp build/universal/$(APP) "$(EXEC)"
 	strip -STx "$(EXEC)" || true
-	codesign --force --deep --sign - --entitlements Resources/$(APP).entitlements "$(APPDIR)"
+	codesign --force --deep --sign $(CODESIGN_ID) --entitlements Resources/$(APP).entitlements "$(APPDIR)"
 	@echo "Built $(APPDIR)"
+	@if [ "$(CODESIGN_ID)" = "-" ]; then \
+	  echo "!! ad-hoc signed: macOS will re-prompt for Screen Recording / Mic"; \
+	  echo "!! after every rebuild. Run 'make signing-identity' to fix for good."; \
+	fi
 
 ## Launch the bundled app.
 run: app

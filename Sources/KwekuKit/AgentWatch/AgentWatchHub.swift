@@ -86,9 +86,11 @@ public final class AgentWatchHub: ObservableObject {
         switch session.destination {
         case .terminal:
             return TerminalFocus.focus(session: session)
-        case .gateway:
-            return NSWorkspace.shared.open(GatewayProtocol.dashboardURL)
-        case .unreachable:
+        case .gateway, .unreachable:
+            // Nowhere to go. Gateway sessions are headless children of the
+            // OpenClaw LaunchAgent — no terminal, no window, no app. Sending
+            // the click to the Control UI only lands on its auth wall, which
+            // is a worse answer than admitting there's nothing to open.
             return false
         }
     }

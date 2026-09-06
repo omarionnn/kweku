@@ -4,7 +4,7 @@ import SwiftUI
 public enum AgentPanelFormat {
     /// Rows shown before the list collapses into a "+N more" line.
     public static let maxRows = 4
-    public static let rowHeight: CGFloat = 22
+    public static let rowHeight: CGFloat = 30
 
     /// Height the panel needs for `count` sessions, including padding.
     public static func bodyHeight(for count: Int) -> CGFloat {
@@ -18,6 +18,13 @@ public enum AgentPanelFormat {
         if s < 60 { return "\(s)s" }
         if s < 3600 { return "\(s / 60)m" }
         return "\(s / 3600)h"
+    }
+
+    /// The row's identity line: which harness, and the terminal app it lives
+    /// in when there is one — "omp · Terminal", "claude · iTerm2", "openclaw".
+    public static func identity(source: String, app: String?) -> String {
+        guard let app, !app.isEmpty else { return source }
+        return "\(source) · \(app)"
     }
 
     /// The collapsed band's summary, e.g. "3 agents · 1 waiting".
@@ -115,16 +122,27 @@ struct AgentPanelView: View {
         Button { agents.focus(session) } label: {
             HStack(spacing: 8) {
                 dot(for: session)
-                Text(session.displayName)
-                    .font(.system(size: 11, weight: .medium))
-                    .foregroundStyle(.white.opacity(0.9))
-                    .lineLimit(1).truncationMode(.middle)
-                // What it's doing right now, in the phase's own colour — the
-                // detail the rim can only gesture at.
-                if let label = session.activityLabel {
-                    Text(label)
-                        .font(.system(size: 9, weight: .medium))
-                        .foregroundStyle(AgentPanelView.tint(session).opacity(0.85))
+                VStack(alignment: .leading, spacing: 1) {
+                    HStack(spacing: 6) {
+                        Text(session.displayName)
+                            .font(.system(size: 11, weight: .medium))
+                            .foregroundStyle(.white.opacity(0.9))
+                            .lineLimit(1).truncationMode(.middle)
+                        // What it's doing right now, in the phase's own colour
+                        // — the detail the rim can only gesture at.
+                        if let label = session.activityLabel {
+                            Text(label)
+                                .font(.system(size: 9, weight: .medium))
+                                .foregroundStyle(AgentPanelView.tint(session).opacity(0.85))
+                                .lineLimit(1).truncationMode(.tail)
+                        }
+                    }
+                    // Who this is and where it lives — the line that tells
+                    // three concurrent harnesses apart at a glance.
+                    Text(AgentPanelFormat.identity(source: session.sourceLabel,
+                                                   app: TerminalFocus.owningAppName(of: session.pid)))
+                        .font(.system(size: 8, weight: .medium))
+                        .foregroundStyle(.white.opacity(0.38))
                         .lineLimit(1).truncationMode(.tail)
                 }
                 Spacer(minLength: 6)

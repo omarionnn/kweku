@@ -110,10 +110,19 @@ struct NotchContentRoot: View {
         .onChange(of: vm.tapCount) { _ in
             guard !music.isShowing else { return }
             // A click on the notch means "take me to whatever wants me" — the
-            // session behind the exclamation eyes. Say so when there's nothing
-            // to open; a click that silently does nothing reads as broken.
-            if !agents.focusCurrent(), agents.table.count > 0 {
+            // session behind the exclamation eyes. Name the reason when there's
+            // nothing to open; a click that silently does nothing reads as
+            // broken, and "no window" is a different problem from "not found".
+            guard !agents.focusCurrent() else { return }
+            switch agents.table.focusTarget()?.destination {
+            case .gateway:
+                showToast("OpenClaw runs in the background — no window to open")
+            case .terminal:
+                showToast("That session's terminal has gone")
+            case .unreachable:
                 showToast("Nothing to open for that session")
+            case nil:
+                break                       // no sessions at all: stay quiet
             }
         }
         .onChange(of: vm.cycleSteps) { steps in

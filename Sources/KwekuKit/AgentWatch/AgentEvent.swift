@@ -59,14 +59,19 @@ public struct AgentEvent: Equatable, Sendable {
     public var activity: AgentActivity?
     /// Name of the tool in flight, when `activity == .tooling`.
     public var tool: String?
+    /// Which harness emitted this: "omp", "claude", "openclaw"… nil when the
+    /// emitter predates the field.
+    public var source: String?
 
     public init(sessionID: String, cwd: String, pid: Int32, state: AgentState,
-                gone: Bool = false, activity: AgentActivity? = nil, tool: String? = nil) {
+                gone: Bool = false, activity: AgentActivity? = nil, tool: String? = nil,
+                source: String? = nil) {
         self.sessionID = sessionID; self.cwd = cwd; self.pid = pid
         self.state = state; self.gone = gone
         // An activity only means something while the agent has the floor.
         self.activity = state == .working ? activity : nil
         self.tool = self.activity == .tooling ? tool : nil
+        self.source = source
     }
 
     /// Parse one JSON line in either wire format. Returns nil on garbage.
@@ -82,13 +87,15 @@ public struct AgentEvent: Equatable, Sendable {
         // Kweku native format.
         if let raw = obj["state"] as? String {
             guard let id = obj["session_id"] as? String else { return nil }
+            let source = obj["source"] as? String
             if raw == "gone" {
-                return AgentEvent(sessionID: id, cwd: cwd, pid: pid, state: .idle, gone: true)
+                return AgentEvent(sessionID: id, cwd: cwd, pid: pid, state: .idle, gone: true,
+                                  source: source)
             }
             guard let state = AgentState(rawValue: raw) else { return nil }
             let activity = (obj["activity"] as? String).flatMap(AgentActivity.init(rawValue:))
             return AgentEvent(sessionID: id, cwd: cwd, pid: pid, state: state,
-                              activity: activity, tool: tool)
+                              activity: activity, tool: tool, source: source)
         }
 
         // Claude Code hook format. The tool hooks are what give the notch a
@@ -98,10 +105,11 @@ public struct AgentEvent: Equatable, Sendable {
             let id = (obj["session_id"] as? String) ?? String(pid)
             func working(_ activity: AgentActivity, tool: String? = nil) -> AgentEvent {
                 AgentEvent(sessionID: id, cwd: cwd, pid: pid, state: .working,
-                           activity: activity, tool: tool)
+                           activity: activity, tool: tool, source: "claude")
             }
             switch hook {
-            case "SessionStart":     return AgentEvent(sessionID: id, cwd: cwd, pid: pid, state: .idle)
+            case "SessionStart":
+                return AgentEvent(sessionID: id, cwd: cwd, pid: pid, state: .idle, source: "claude")
             case "UserPromptSubmit": return working(.thinking)
             case "PreToolUse":       return working(.tooling, tool: tool)
             // The tool has returned and the model is reading its output —
@@ -109,9 +117,10 @@ public struct AgentEvent: Equatable, Sendable {
             case "PostToolUse":      return working(.thinking)
             case "SubagentStop":     return working(.thinking)
             case "Stop", "Notification":
-                return AgentEvent(sessionID: id, cwd: cwd, pid: pid, state: .waiting)
+                return AgentEvent(sessionID: id, cwd: cwd, pid: pid, state: .waiting, source: "claude")
             case "SessionEnd":
-                return AgentEvent(sessionID: id, cwd: cwd, pid: pid, state: .idle, gone: true)
+                return AgentEvent(sessionID: id, cwd: cwd, pid: pid, state: .idle, gone: true,
+                                  source: "claude")
             default: return nil
             }
         }

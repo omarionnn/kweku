@@ -30,6 +30,9 @@ public struct AgentSession: Equatable, Sendable {
     public var activity: AgentActivity?
     /// Tool in flight, when `activity == .tooling`.
     public var tool: String?
+    /// Which harness runs this session ("omp", "claude", "openclaw"); nil
+    /// when the emitter never said.
+    public var source: String?
 
     /// The row label for the session's current phase, e.g. "Bash", "thinking".
     public var activityLabel: String? {
@@ -63,6 +66,15 @@ public struct AgentSession: Equatable, Sendable {
         if id == Self.gatewayID { return "OpenClaw" }
         return String(id.prefix(8))
     }
+
+    /// The identity line: which harness this is, e.g. "omp", "claude",
+    /// "openclaw". Sessions that never declared themselves are just live
+    /// processes — call them what they are.
+    public var sourceLabel: String {
+        if let source, !source.isEmpty { return source }
+        if id == Self.gatewayID { return "openclaw" }
+        return "terminal"
+    }
 }
 
 /// Pure session bookkeeping (unit-tested): apply events, expose the aggregate
@@ -89,6 +101,7 @@ public struct AgentSessionTable: Equatable {
         // "unknown", so the rim always has something calm to show.
         s.activity = event.activity ?? (event.state == .working ? .thinking : nil)
         s.tool = event.tool
+        if let source = event.source { s.source = source }
         if !event.cwd.isEmpty { s.cwd = event.cwd }
         if event.pid > 0 { s.pid = event.pid }
         sessions[event.sessionID] = s
@@ -117,9 +130,26 @@ public struct AgentSessionTable: Equatable {
             .first?.tool
     }
 
+    /// How useful a click on this session would be. A terminal window can
+    /// actually be raised; a gateway session is a headless child of the
+    /// OpenClaw LaunchAgent with no window anywhere. When two sessions are
+    /// equally waiting, the one you can be taken *to* is the better target.
+    private static func reach(_ s: AgentSession) -> Int {
+        switch s.destination {
+        case .terminal:    return 0
+        case .gateway:     return 1
+        case .unreachable: return 2
+        }
+    }
+
+    /// Within one state group: reachable first, then newest.
+    private static func moreActionable(_ a: AgentSession, _ b: AgentSession) -> Bool {
+        reach(a) != reach(b) ? reach(a) < reach(b) : a.lastUpdated > b.lastUpdated
+    }
+
     /// Display order for the agent panel: the sessions that want the user
-    /// first, then the busy ones, then the rest — each group newest-first.
-    /// `focusTarget()` is always this list's head.
+    /// first, then the busy ones, then the rest — each group most-actionable
+    /// first. `focusTarget()` is always this list's head.
     public var ordered: [AgentSession] {
         func rank(_ s: AgentSession) -> Int {
             switch s.state {
@@ -129,19 +159,20 @@ public struct AgentSessionTable: Equatable {
             }
         }
         return sessions.values.sorted {
-            rank($0) != rank($1) ? rank($0) < rank($1) : $0.lastUpdated > $1.lastUpdated
+            rank($0) != rank($1) ? rank($0) < rank($1) : Self.moreActionable($0, $1)
         }
     }
 
-    /// The session a click should focus: the most recently updated *waiting*
-    /// session (it needs the user), else the most recent working one, else
-    /// the most recent of any.
+    /// The session a click should focus: the *waiting* session that most wants
+    /// the user and can most be reached, else the same among working ones,
+    /// else the best of any. Reachability is a tiebreak inside a state group,
+    /// never across one — a waiting session still outranks a working one even
+    /// when only the working one has a window.
     public func focusTarget() -> AgentSession? {
         let all = sessions.values
-        let byRecency: (AgentSession, AgentSession) -> Bool = { $0.lastUpdated > $1.lastUpdated }
-        return all.filter { $0.state == .waiting }.sorted(by: byRecency).first
-            ?? all.filter { $0.state == .working }.sorted(by: byRecency).first
-            ?? all.sorted(by: byRecency).first
+        return all.filter { $0.state == .waiting }.sorted(by: Self.moreActionable).first
+            ?? all.filter { $0.state == .working }.sorted(by: Self.moreActionable).first
+            ?? all.sorted(by: Self.moreActionable).first
     }
 
     /// Remove sessions whose process died or that went silent for too long.

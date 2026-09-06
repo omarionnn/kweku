@@ -58,7 +58,8 @@ struct NotchContentRoot: View {
     /// The hover-reveal session list, offered in critter mode as well as its
     /// own mode — it's the thing most worth surfacing when you look at Kweku.
     private var showAgentPanel: Bool {
-        !hidden && mode == .critter && open && !vm.expanded && agents.table.count > 0
+        !hidden && open && !vm.expanded && agents.table.count > 0
+            && (mode == .critter || music.isShowing)
     }
     private var showCaptions: Bool {
         !hidden && live.running && !(live.caption.isEmpty && live.heard.isEmpty)
@@ -78,7 +79,7 @@ struct NotchContentRoot: View {
         ZStack(alignment: .top) {
             Color.clear
             if music.isShowing {
-                NowPlayingView(music: music, vm: vm, rim: rim)
+                musicStack
             } else if mode == .weather && !hidden {
                 weatherStack
             } else if mode == .agents && !hidden {
@@ -186,6 +187,17 @@ struct NotchContentRoot: View {
         }
     }
 
+    /// Spotify island with the mode's strips (agent panel, captions, shelf)
+    /// stacked under it when open — so music and agents show at once. The
+    /// critter rides in the island's collapsed wing.
+    private var musicStack: some View {
+        VStack(spacing: 0) {
+            NowPlayingView(music: music, vm: vm, rim: rim, critter: creature)
+                .frame(height: vm.notchSize.height + musicBody)
+            strips
+        }
+    }
+
     /// The stack of optional strips that hang under whichever mode is showing.
     /// Drop targets replace the rest while a drag is armed — mid-drag is no
     /// time to be reading captions.
@@ -241,6 +253,7 @@ struct NotchContentRoot: View {
     // MARK: - Sizing
 
     private var weatherBody: CGFloat { open ? WeatherView.expandedBody : WeatherView.peek }
+    private var musicBody: CGFloat { open ? NowPlayingView.expandedBody : NowPlayingView.lip }
     private var agentModeBody: CGFloat {
         open ? AgentModeView.expandedBody(for: agents.table.count) : AgentModeView.peek
     }
@@ -256,23 +269,21 @@ struct NotchContentRoot: View {
                 width = NowPlayingView.expandedWidth
                 height = base.height + NowPlayingView.expandedBody
             } else {
-                // Notch grows sideways: art | cutout | equalizer, cutout height.
+                // Notch grows sideways: art | cutout | critter, cutout height.
                 width = base.width + 2 * NowPlayingView.wing
                 height = base.height + NowPlayingView.lip
             }
-            vm.desiredSize = CGSize(width: width, height: height)
-            return
-        }
-
-        switch mode {
-        case .critter:
-            height += CreatureView.peek
-        case .weather:
-            height += weatherBody
-            if open { width = max(width, WeatherView.expandedWidth) }
-        case .agents:
-            height += agentModeBody
-            if open { width = max(width, AgentModeView.expandedWidth) }
+        } else {
+            switch mode {
+            case .critter:
+                height += CreatureView.peek
+            case .weather:
+                height += weatherBody
+                if open { width = max(width, WeatherView.expandedWidth) }
+            case .agents:
+                height += agentModeBody
+                if open { width = max(width, AgentModeView.expandedWidth) }
+            }
         }
 
         // Strips below the mode body.

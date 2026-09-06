@@ -18,6 +18,10 @@ struct NowPlayingView: View {
     @ObservedObject var music: MusicHub
     @ObservedObject var vm: NotchViewModel
     var rim: NotchRimStyle
+    /// The critter rides in the collapsed island's right wing, so music and
+    /// the creature can be enjoyed at once. Expanded, the card takes over and
+    /// the agent panel stacks below instead.
+    @ObservedObject var critter: CreatureState
 
     @State private var artGlow = false
     /// Width of each side wing holding art / equalizer (iPhone ears ≈ 52pt).
@@ -99,8 +103,9 @@ struct NowPlayingView: View {
             .onAppear { startArtGlow() }
             .onChange(of: music.now.isPlaying) { _ in startArtGlow() }
             Spacer(minLength: 0)              // the physical cutout lives here
-            Equalizer(active: music.now.isPlaying, colour: accent)
-                .frame(width: 22, height: 15)
+            CritterFace(state: critter, vm: vm, showMotes: false)
+                .scaleEffect(0.7)
+                .frame(width: 30, height: 24)
         }
         .padding(.horizontal, 13)
     }
@@ -327,31 +332,6 @@ struct Marquee: View {
 private struct MarqueeWidthKey: PreferenceKey {
     static var defaultValue: CGFloat = 0
     static func reduce(value: inout CGFloat, nextValue: () -> CGFloat) { value = nextValue() }
-}
-
-/// Audio equalizer bars; oscillate (Core-Animation-driven) while playing,
-/// tinted with the album's accent colour.
-private struct Equalizer: View {
-    var active: Bool
-    var colour: Color = .white
-    @State private var up = false
-    private let durations: [Double] = [0.38, 0.55, 0.46, 0.62, 0.42]
-    var body: some View {
-        HStack(alignment: .center, spacing: 2) {
-            ForEach(0..<5, id: \.self) { i in
-                Capsule().fill(colour.opacity(0.9))
-                    .frame(width: 2.6, height: barHeight(i))
-                    .animation(active ? .easeInOut(duration: durations[i]).repeatForever(autoreverses: true)
-                                      : .easeOut(duration: 0.2), value: up)
-            }
-        }
-        .onAppear { up = active }
-        .onChange(of: active) { up = $0 }
-    }
-    private func barHeight(_ i: Int) -> CGFloat {
-        let lows: [CGFloat] = [4, 7, 3, 6, 4], highs: [CGFloat] = [13, 9, 15, 10, 12]
-        return active ? (up ? highs[i] : lows[i]) : lows[i]
-    }
 }
 
 extension Color {

@@ -163,16 +163,36 @@ enum GeminiLiveTests {
     }
 
     static func screenTargeting() {
-        Check.run("front window: first layer-0 entry of the focused pid wins") {
-            let windows: [(id: UInt32, pid: Int32, layer: Int)] = [
-                (901, 500, 25),   // someone's overlay, in front but not layer 0
-                (902, 400, 0),    // another app's window
-                (903, 500, 0),    // the focused app's frontmost regular window
-                (904, 500, 0),    // same app, further back
+        Check.run("focused window: phantom strips lose, frontmost app wins") {
+            func win(_ id: UInt32, _ pid: Int32, layer: Int = 0,
+                     w: CGFloat = 900, h: CGFloat = 600, a: CGFloat = 1,
+                     regular: Bool = true) -> ScreenTargeting.WindowInfo {
+                .init(id: id, pid: pid, layer: layer, width: w, height: h,
+                      alpha: a, regularApp: regular)
+            }
+            // The field, front-to-back: everything that beat the real window.
+            let field = [
+                win(901, 500, layer: 25),                        // menu-bar item
+                win(902, 501, w: 1470, h: 66, regular: false),   // OpenClaw HUD strip
+                win(906, 503, w: 66, h: 20, a: 0),               // invisible helper
+                win(907, 503, w: 1470, h: 90),                   // Terminal's phantom strip
+                win(903, 502, w: 40, h: 40),                     // tiny palette
+                win(904, 503),                                   // the user's real window
+                win(905, 504),                                   // another app, further back
             ]
-            Check.ok(ScreenTargeting.frontWindowID(pid: 500, windows: windows) == 903, "picks 903")
-            Check.ok(ScreenTargeting.frontWindowID(pid: 999, windows: windows) == nil,
-                     "unknown pid -> nil (display fallback)")
+            Check.ok(ScreenTargeting.focusedWindowID(windows: field, excludingPid: 1) == 904,
+                     "skips overlays, accessory strips, phantoms, and palettes")
+            Check.ok(ScreenTargeting.focusedWindowID(windows: field, frontmostPid: 504,
+                                                     excludingPid: 1) == 905,
+                     "frontmost app's window preferred over higher z of another app")
+            Check.ok(ScreenTargeting.focusedWindowID(windows: field, frontmostPid: 501,
+                                                     excludingPid: 1) == 904,
+                     "accessory frontmost (OpenClaw) has no qualifying window -> z-order")
+            Check.ok(ScreenTargeting.focusedWindowID(windows: field, excludingPid: 503) == 905,
+                     "own process never captured")
+            Check.ok(ScreenTargeting.focusedWindowID(windows: [win(9, 5, regular: false)],
+                                                     excludingPid: 1) == nil,
+                     "nothing qualifies -> nil (display fallback)")
         }
         Check.run("output size: native when small, capped with aspect when big") {
             let small = ScreenTargeting.outputSize(for: CGSize(width: 400, height: 300))

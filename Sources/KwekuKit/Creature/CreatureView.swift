@@ -11,8 +11,6 @@ struct CreatureView: View {
     var rim: NotchRimStyle
     @State private var breathe = false
 
-    @State private var emberPulse = false
-
     /// Height of the face band that hangs below the notch cutout.
     static let peek: CGFloat = 30
 
@@ -26,19 +24,12 @@ struct CreatureView: View {
         let cutoutH = vm.notchSize.height
         let totalH = cutoutH + Self.peek
 
-        let eyeH: CGFloat = 15
-        let eyeW: CGFloat = 13.5
-        let pupilR = eyeW * 0.24
-        let travel = max(0, eyeW / 2 - pupilR - 0.5)
-        let eyeDX = eyeW / 2 + 3.5
-        let eyeCY: CGFloat = 3
-
         ZStack(alignment: .top) {
             Color.clear
             ZStack(alignment: .top) {
                 NotchPanelShape(notchWidth: width, notchHeight: cutoutH, bottom: 12).fill(Color.black)
                 NotchRim(notchWidth: width, notchHeight: cutoutH, bottom: 12, style: rim)
-                face(eyeW: eyeW, eyeH: eyeH, pupilR: pupilR, travel: travel, eyeDX: eyeDX, eyeCY: eyeCY)
+                CritterFace(state: state, vm: vm)
                     .frame(width: width, height: Self.peek)
                     .scaleEffect(state.popScale)
                     // Body leans into a sideways slide and swings back as the
@@ -50,12 +41,6 @@ struct CreatureView: View {
             .frame(width: width, height: totalH)
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
-        .animation(.spring(response: 0.16, dampingFraction: 0.6), value: state.gaze)
-        .animation(.easeInOut(duration: 0.25), value: state.charging)
-        .animation(.easeInOut(duration: 0.25), value: state.capsLock)
-        .animation(.spring(response: 0.34, dampingFraction: 0.72), value: state.cameraActive)
-        .animation(.spring(response: 0.3, dampingFraction: 0.55), value: state.agentWaiting)
-        .animation(.easeInOut(duration: 0.45), value: state.agentActivity)
         .animation(.spring(response: 0.28, dampingFraction: 0.62), value: vm.slideVelocity)
         .onAppear {
             withAnimation(.easeInOut(duration: 2.6).repeatForever(autoreverses: true)) { breathe = true }
@@ -67,6 +52,38 @@ struct CreatureView: View {
     private var lean: Double {
         let v = min(max(vm.slideVelocity / Self.leanReach, -1), 1)
         return Double(-v * Self.leanDegrees)
+    }
+}
+
+/// Just the critter's face — eyes, ears, mouth and the agent-state flourishes
+/// (ember, drifting motes, exclamation eyes). Split out of `CreatureView` so
+/// the Spotify island can wear the critter in its collapsed wing: pass
+/// `showMotes: false` there, since a ~48pt wing has no room for the motes to
+/// climb through.
+struct CritterFace: View {
+    @ObservedObject var state: CreatureState
+    var vm: NotchViewModel
+    /// Motes drift in the empty band either side of the face; off in tight
+    /// spaces like the music island's wing.
+    var showMotes: Bool = true
+
+    @State private var emberPulse = false
+
+    var body: some View {
+        let eyeH: CGFloat = 15
+        let eyeW: CGFloat = 13.5
+        let pupilR = eyeW * 0.24
+        let travel = max(0, eyeW / 2 - pupilR - 0.5)
+        let eyeDX = eyeW / 2 + 3.5
+        let eyeCY: CGFloat = 3
+
+        face(eyeW: eyeW, eyeH: eyeH, pupilR: pupilR, travel: travel, eyeDX: eyeDX, eyeCY: eyeCY)
+            .animation(.spring(response: 0.16, dampingFraction: 0.6), value: state.gaze)
+            .animation(.easeInOut(duration: 0.25), value: state.charging)
+            .animation(.easeInOut(duration: 0.25), value: state.capsLock)
+            .animation(.spring(response: 0.34, dampingFraction: 0.72), value: state.cameraActive)
+            .animation(.spring(response: 0.3, dampingFraction: 0.55), value: state.agentWaiting)
+            .animation(.easeInOut(duration: 0.45), value: state.agentActivity)
     }
 
     /// The ember under the chin, tinted to match whichever rim is running.
@@ -118,7 +135,7 @@ struct CreatureView: View {
             // the face; the busier phases get an ember under the chin, in the
             // same colour their rim is wearing.
             if state.agentActivity == .thinking {
-                motes.transition(.opacity)
+                if showMotes { motes.transition(.opacity) }
             } else if let ember = emberColour {
                 Circle()
                     .fill(RadialGradient(colors: [ember.opacity(0.85), ember.opacity(0)],

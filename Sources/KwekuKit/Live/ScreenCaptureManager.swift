@@ -7,11 +7,52 @@ import UniformTypeIdentifiers
 
 /// Pure targeting maths for the screen stream (unit-tested).
 public enum ScreenTargeting {
-    /// Frontmost regular window of `pid` from a front-to-back window list —
-    /// the first layer-0 entry the compositor reports for that process.
-    public static func frontWindowID(pid: Int32,
-                                     windows: [(id: UInt32, pid: Int32, layer: Int)]) -> UInt32? {
-        windows.first { $0.pid == pid && $0.layer == 0 }?.id
+    /// One on-screen window as the compositor reports it, front-to-back.
+    public struct WindowInfo: Equatable {
+        public var id: UInt32
+        public var pid: Int32
+        public var layer: Int
+        public var width: CGFloat
+        public var height: CGFloat
+        public var alpha: CGFloat
+        /// Owner has `.regular` activation policy — a real app the user can
+        /// be "in", as opposed to accessory HUDs, gateways, and overlays.
+        public var regularApp: Bool
+
+        public init(id: UInt32, pid: Int32, layer: Int,
+                    width: CGFloat, height: CGFloat, alpha: CGFloat = 1,
+                    regularApp: Bool) {
+            self.id = id; self.pid = pid; self.layer = layer
+            self.width = width; self.height = height; self.alpha = alpha
+            self.regularApp = regularApp
+        }
+    }
+
+    /// The window the user is actually in.
+    ///
+    /// Two field failures shape this. `NSWorkspace.frontmostApplication` +
+    /// "its first window" aimed at an accessory HUD's 1470×66 strip; and a
+    /// bare z-order scan still lost to *phantom* windows — real apps keep
+    /// nameless full-width strips (Terminal: 1470×68, alpha 1) and invisible
+    /// helpers (66×20, alpha 0) at layer 0 ahead of their actual windows.
+    ///
+    /// So: qualify hard (layer 0, visible, regular app, big enough to be a
+    /// working window), then prefer the frontmost app's topmost qualifying
+    /// window, else the topmost qualifying window overall — the compositor's
+    /// z-order settles what "in front" means.
+    public static func focusedWindowID(windows: [WindowInfo],
+                                       frontmostPid: Int32? = nil,
+                                       excludingPid: Int32,
+                                       minWidth: CGFloat = 200,
+                                       minHeight: CGFloat = 150) -> UInt32? {
+        let qualified = windows.filter {
+            $0.layer == 0 && $0.pid != excludingPid && $0.regularApp && $0.alpha > 0
+                && $0.width >= minWidth && $0.height >= minHeight
+        }
+        if let frontmostPid, let own = qualified.first(where: { $0.pid == frontmostPid }) {
+            return own.id
+        }
+        return qualified.first?.id
     }
 
     /// Output size for a window: at native pixels when small, capped at
@@ -122,6 +163,18 @@ final class ScreenCaptureManager: NSObject, SCStreamDelegate, SCStreamOutput {
         queue.async { self.sendASAP = true }
     }
 
+
+    // MARK: - Debug (env-gated; same switch as the frame log)
+
+    static let debug = ProcessInfo.processInfo.environment["KWEKU_LIVE_DEBUG"] != nil
+
+    static func dbg(_ s: String) {
+        guard debug else { return }
+        let line = "\(Date().timeIntervalSince1970) \(s)\n"
+        if let h = FileHandle(forWritingAtPath: "/tmp/kweku_live.log") {
+            h.seekToEndOfFile(); h.write(Data(line.utf8)); h.closeFile()
+        } else { try? line.write(toFile: "/tmp/kweku_live.log", atomically: true, encoding: .utf8) }
+    }
     // MARK: - Focus tracking (main thread)
 
     /// Aim the stream at the frontmost window; fall back to the display with
@@ -132,17 +185,34 @@ final class ScreenCaptureManager: NSObject, SCStreamDelegate, SCStreamOutput {
         // Front-to-back z-order comes from the window server; SCShareableContent
         // makes no ordering promise, so the choice is made here and matched there.
         var frontID: UInt32?
-        if let pid = NSWorkspace.shared.frontmostApplication?.processIdentifier,
-           pid != ProcessInfo.processInfo.processIdentifier,
-           let info = CGWindowListCopyWindowInfo(.optionOnScreenOnly, kCGNullWindowID) as? [[String: Any]] {
-            let windows = info.compactMap { d -> (id: UInt32, pid: Int32, layer: Int)? in
+        if let info = CGWindowListCopyWindowInfo(.optionOnScreenOnly, kCGNullWindowID) as? [[String: Any]] {
+            var policyCache: [Int32: Bool] = [:]
+            func regular(_ pid: Int32) -> Bool {
+                if let hit = policyCache[pid] { return hit }
+                let isRegular = NSRunningApplication(processIdentifier: pid)?
+                    .activationPolicy == .regular
+                policyCache[pid] = isRegular
+                return isRegular
+            }
+            let windows = info.compactMap { d -> ScreenTargeting.WindowInfo? in
                 guard let id = d[kCGWindowNumber as String] as? UInt32,
                       let owner = d[kCGWindowOwnerPID as String] as? Int32,
-                      let layer = d[kCGWindowLayer as String] as? Int else { return nil }
-                return (id, owner, layer)
+                      let layer = d[kCGWindowLayer as String] as? Int
+                else { return nil }
+                let bounds = d[kCGWindowBounds as String] as? [String: Any]
+                return ScreenTargeting.WindowInfo(
+                    id: id, pid: owner, layer: layer,
+                    width: CGFloat((bounds?["Width"] as? Double) ?? 0),
+                    height: CGFloat((bounds?["Height"] as? Double) ?? 0),
+                    alpha: CGFloat((d[kCGWindowAlpha as String] as? Double) ?? 1),
+                    regularApp: regular(owner))
             }
-            frontID = ScreenTargeting.frontWindowID(pid: pid, windows: windows)
+            frontID = ScreenTargeting.focusedWindowID(
+                windows: windows,
+                frontmostPid: NSWorkspace.shared.frontmostApplication?.processIdentifier,
+                excludingPid: ProcessInfo.processInfo.processIdentifier)
         }
+        Self.dbg("retarget force=\(force) frontID=\(frontID.map(String.init) ?? "nil") current=\(targetWindowID)/\(targetDisplayID)")
         let screenID = (NSScreen.main?.deviceDescription[
             NSDeviceDescriptionKey("NSScreenNumber")] as? NSNumber)
             .map { CGDirectDisplayID($0.uint32Value) } ?? CGMainDisplayID()
@@ -164,6 +234,7 @@ final class ScreenCaptureManager: NSObject, SCStreamDelegate, SCStreamOutput {
                 guard let content else { return }
 
                 if let frontID, let win = content.windows.first(where: { $0.windowID == frontID }) {
+                    Self.dbg("aim window id=\(frontID) '\(win.title ?? "")' \(Int(win.frame.width))x\(Int(win.frame.height))")
                     self.apply(filter: SCContentFilter(desktopIndependentWindow: win),
                                size: ScreenTargeting.outputSize(for: win.frame.size))
                     self.targetWindowID = frontID
@@ -178,6 +249,7 @@ final class ScreenCaptureManager: NSObject, SCStreamDelegate, SCStreamOutput {
                     if force { self.onIssue?("No display found for screen capture") }
                     return
                 }
+                Self.dbg("aim display id=\(display.displayID)")
                 self.apply(filter: SCContentFilter(display: display, excludingWindows: []),
                            size: ScreenTargeting.outputSize(for: CGSize(width: display.width,
                                                              height: display.height), scale: 1))
@@ -201,9 +273,12 @@ final class ScreenCaptureManager: NSObject, SCStreamDelegate, SCStreamOutput {
 
         if let stream {
             stream.updateContentFilter(filter) { [weak self] err in
+                Self.dbg("updateContentFilter -> \(err.map { "\($0)" } ?? "ok")")
                 if let err { self?.onIssue?("Screen retarget failed: \(err.localizedDescription)") }
             }
-            stream.updateConfiguration(config) { _ in }
+            stream.updateConfiguration(config) { err in
+                Self.dbg("updateConfiguration -> \(err.map { "\($0)" } ?? "ok")")
+            }
             return
         }
 
@@ -237,11 +312,11 @@ final class ScreenCaptureManager: NSObject, SCStreamDelegate, SCStreamOutput {
         lastFrame = jpeg
         frameLock.unlock()
         framesSent += 1
-        if ProcessInfo.processInfo.environment["KWEKU_LIVE_DEBUG"] != nil, framesSent % 10 == 1 {
-            let line = "\(now.timeIntervalSince1970) frame#\(framesSent) jpeg=\(jpeg.count)B\n"
-            if let h = FileHandle(forWritingAtPath: "/tmp/kweku_live.log") {
-                h.seekToEndOfFile(); h.write(Data(line.utf8)); h.closeFile()
-            } else { try? line.write(toFile: "/tmp/kweku_live.log", atomically: true, encoding: .utf8) }
+        if Self.debug {
+            try? jpeg.write(to: URL(fileURLWithPath: "/tmp/kweku_frame.jpg"))
+            if framesSent % 10 == 1 {
+                Self.dbg("frame#\(framesSent) jpeg=\(jpeg.count)B")
+            }
         }
         onFrame?(jpeg)
     }

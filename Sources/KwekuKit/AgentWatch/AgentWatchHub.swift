@@ -13,6 +13,12 @@ public final class AgentWatchHub: ObservableObject {
     private var pruneTimer: Timer?
     private let openClaw = OpenClawBridgeManager.shared
     private var externalCleanup: [String: DispatchWorkItem] = [:]
+    private var attention = AgentAttention.Ledger()
+
+    /// Raised when a background session has sat waiting long enough to be
+    /// worth saying out loud. The payload is a ready-made instruction for the
+    /// Live conversation; leave it nil and the notch stays silent as before.
+    public var onAttention: ((String) -> Void)?
 
     public init() {
         setupDone = setup.allInstalled
@@ -31,9 +37,14 @@ public final class AgentWatchHub: ObservableObject {
             }
         }
 
+        // Pruning and the attention sweep share a tick: both only ever act on
+        // sessions that have been sitting still, so a 30s granularity is
+        // exactly the resolution either one deserves.
         let timer = Timer(timeInterval: 30, repeats: true) { [weak self] _ in
             MainActor.assumeIsolated {
-                self?.table.prune(isAlive: { pid in kill(pid, 0) == 0 || errno != ESRCH })
+                guard let self else { return }
+                self.table.prune(isAlive: { pid in kill(pid, 0) == 0 || errno != ESRCH })
+                self.sweepAttention()
             }
         }
         RunLoop.main.add(timer, forMode: .common)
@@ -112,6 +123,20 @@ public final class AgentWatchHub: ObservableObject {
         }
         externalCleanup[id] = work
         DispatchQueue.main.asyncAfter(deadline: .now() + 120, execute: work)
+    }
+
+    /// Look for sessions that have been waiting long enough to mention.
+    ///
+    /// The ledger is what keeps this from becoming a nag: each stretch of
+    /// waiting is announced at most once, and a session that goes back to work
+    /// clears its own record.
+    private func sweepAttention() {
+        guard onAttention != nil else { return }
+        let (alerts, ledger) = AgentAttention.alerts(
+            sessions: Array(table.sessions.values), ledger: attention, now: Date())
+        attention = ledger
+        guard !alerts.isEmpty else { return }
+        onAttention?(AgentAttention.prompt(for: alerts))
     }
 
     /// Install the omp extension + Claude hooks (explicit user action).

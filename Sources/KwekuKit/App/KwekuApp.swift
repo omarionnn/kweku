@@ -16,6 +16,7 @@ public enum KwekuApp {
 final class AppDelegate: NSObject, NSApplicationDelegate {
     private var controller: NotchController?
     private var captureProbe: ScreenCaptureManager?
+    private var captureProbeTimeline: ScreenTimelineStore?
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         Self.migrateLegacyDefaults()
@@ -32,9 +33,20 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         if ProcessInfo.processInfo.environment["KWEKU_CAPTURE_PROBE"] != nil
             || UserDefaults.standard.bool(forKey: "captureProbe") {
             let probe = ScreenCaptureManager()
+            let timeline = ScreenTimelineStore()
             probe.onIssue = { ScreenCaptureManager.dbg("probe issue: \($0)") }
+            probe.onAim = { app, title, redacted in
+                ScreenCaptureManager.dbg("probe aim app='\(app)' title='\(title)' "
+                                         + "redacted=\(redacted)")
+            }
+            // Exercise the real recording path, so the rig can prove the
+            // timeline fills and that redacted windows leave no trace in it.
+            probe.onMoment = { app, title, jpeg, redacted in
+                timeline.record(app: app, title: title, jpeg: jpeg, redacted: redacted)
+            }
             probe.startStreaming { _ in }
             captureProbe = probe
+            captureProbeTimeline = timeline
         }
     }
 

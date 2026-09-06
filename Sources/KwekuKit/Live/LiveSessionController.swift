@@ -45,6 +45,14 @@ public final class LiveSessionController: ObservableObject {
     private let screen = ScreenCaptureManager()
     private let client = GeminiLiveClient()
 
+    /// Local, on-disk record of what has been on screen. Survives the session
+    /// so "what was that error before lunch?" outlives the conversation it
+    /// wasn't asked in.
+    public let timeline = ScreenTimelineStore()
+
+    /// Cooldown state for unsolicited triage.
+    private var triage = TriageTrigger.State()
+
     // A+B memory: rolling local transcript + session-resumption handle.
     private var memory = ConversationMemory()
     private var resumeHandle: String?
@@ -91,7 +99,8 @@ public final class LiveSessionController: ObservableObject {
     @discardableResult
     public func start() -> Bool {
         guard !running else { return true }
-        guard let key = Self.apiKey else { status = "no API key"; return false }
+        // `connectSocket` reads the key itself; this is only the early exit.
+        guard Self.apiKey != nil else { status = "no API key"; return false }
 
         client.onEvent = { [weak self] event in self?.handle(event) }
         client.onClose = { [weak self] reason in
@@ -134,6 +143,24 @@ public final class LiveSessionController: ObservableObject {
                 }
             }
         }
+        // Everything that goes out is also offered to the timeline; the store
+        // throttles, so this stays a cheap call on the frame path.
+        screen.onMoment = { [weak self] app, title, jpeg, redacted in
+            self?.timeline.record(app: app, title: title, jpeg: jpeg, redacted: redacted)
+        }
+        // Switching to a window that looks broken is the moment to offer help
+        // unprompted — see `TriageTrigger` for why this is so heavily muzzled.
+        screen.onAim = { [weak self] app, title, redacted in
+            MainActor.assumeIsolated {
+                guard let self, !redacted else { return }
+                let (fire, next) = TriageTrigger.evaluate(
+                    app: app, title: title, state: self.triage, now: Date(),
+                    sessionLive: self.running, busy: self.speaking || self.composing)
+                self.triage = next
+                guard fire else { return }
+                self.triageCurrentScreen(app: app)
+            }
+        }
         screen.startStreaming { [weak self] jpeg in self?.client.sendVideoFrame(jpeg) }
 
         running = true
@@ -173,6 +200,64 @@ public final class LiveSessionController: ObservableObject {
     /// Wipe Kweku's long-term conversational memory (menu action).
     public func forgetConversations() {
         memory.clear()
+    }
+
+    /// Wipe the screen timeline (menu action). Separate from conversations:
+    /// a record of every window you've had open deserves its own off switch.
+    public func forgetScreenHistory() {
+        timeline.clear()
+    }
+
+    /// Say something Omari didn't ask for — a waiting agent, a broken build.
+    ///
+    /// Refused while Kweku already has the floor: `clientText` completes a
+    /// turn, so interrupting its own sentence is the one way to make a helpful
+    /// notice feel like a malfunction.
+    @discardableResult
+    public func interject(_ prompt: String) -> Bool {
+        guard running, !speaking, !composing else { return false }
+        client.sendClientText(prompt)
+        return true
+    }
+
+    /// Read the current screen for a real failure, and only then speak.
+    ///
+    /// The window title decided it was worth looking; this decides whether
+    /// there is anything to say. A glance that comes back empty ends here in
+    /// silence, which is the common case and the point.
+    private func triageCurrentScreen(app: String) {
+        guard let key = Self.apiKey, let frame = screen.latestFrame() else { return }
+        Task { [weak self] in
+            guard let finding = await ScreenGlance.inspect(
+                jpeg: frame, prompt: ScreenGlance.triagePrompt, apiKey: key) else { return }
+            await MainActor.run {
+                _ = self?.interject(TriageTrigger.prompt(app: app, evidence: finding))
+            }
+        }
+    }
+
+    /// Answer a `recall_screen` tool call from the local timeline.
+    ///
+    /// Window titles answer "what was I doing"; they cannot answer "what did
+    /// that error say". For the latter the saved frame has to actually be
+    /// read — and pushing it onto the video feed does not work, because the
+    /// tool response resumes a turn that cannot see that feed. So the frame is
+    /// read here and the reading is returned as text.
+    private func recallScreen(_ args: [String: String]) async -> String {
+        let query = args["query"] ?? ""
+        let minutes = args["minutes_ago"].flatMap(Double.init)
+        let now = Date()
+        let hits = timeline.search(query: query, within: minutes, now: now)
+        let text = ScreenTimeline.describe(hits, now: now)
+        guard let best = hits.first,
+              let frame = timeline.frameData(for: best),
+              let key = Self.apiKey,
+              let seen = await ScreenGlance.inspect(
+                  jpeg: frame, prompt: ScreenGlance.recallPrompt, apiKey: key)
+        else { return text }
+
+        return text + "\n\nWhat the saved frame from "
+            + "\(ScreenTimeline.relative(from: best.at, to: now)) actually showed:\n\(seen)"
     }
 
     /// Connect (or reconnect) the Gemini socket. `fresh` starts a new
@@ -266,6 +351,8 @@ public final class LiveSessionController: ObservableObject {
                     output = await OMPBridgeManager.dispatchCommand(args["prompt"] ?? "", cwd: cwd)
                 case "dispatch_openclaw_action":
                     output = await self?.dispatchToOpenClaw(args) ?? "Kweku went away mid-task."
+                case "recall_screen":
+                    output = await self?.recallScreen(args) ?? "The screen timeline is unavailable."
                 default:
                     output = "unknown tool \(name)"
                 }

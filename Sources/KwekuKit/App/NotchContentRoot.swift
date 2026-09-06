@@ -156,6 +156,10 @@ struct NotchContentRoot: View {
             if mode == .weather { weather.setActive(true) }
             live.ompCwdProvider = { agents.table.focusTarget()?.cwd }
             live.externalActivity = { id, state in agents.noteExternal(id: id, state: state) }
+            // A stalled agent is only visible to someone looking at the panel.
+            // When a Live session is open, say it instead — `interject` is a
+            // no-op when there isn't one, or when Kweku is already talking.
+            agents.onAttention = { prompt in live.interject(prompt) }
         }
         .contextMenu { menu }
     }
@@ -377,6 +381,7 @@ struct NotchContentRoot: View {
         }
         Button("Set Gemini API Key…") { promptForGeminiKey() }
         Button("Forget Conversations") { live.forgetConversations() }
+        Button("Forget Screen History") { live.forgetScreenHistory() }
         Divider()
         Button(action: { agents.runSetup() }) {
             Label("Set Up Agent Watch", systemImage: agents.setupDone ? "checkmark" : "")

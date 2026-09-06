@@ -26,7 +26,17 @@ enum GeminiLiveTests {
             let tools = (setup?["tools"] as? [[String: Any]]) ?? []
             Check.ok(tools.count == 2, "two tool groups")
             let fns = (tools.first?["functionDeclarations"] as? [[String: Any]]) ?? []
-            Check.ok(fns.count == 2, "two function declarations")
+            Check.ok(fns.count == 3, "three function declarations")
+            let names = fns.compactMap { $0["name"] as? String }
+            Check.ok(names.contains("recall_screen"), "screen recall tool declared")
+            let recall = fns.first { $0["name"] as? String == "recall_screen" }
+            let recallProps = (recall?["parameters"] as? [String: Any])?["properties"] as? [String: Any]
+            Check.ok(recallProps?["query"] != nil && recallProps?["minutes_ago"] != nil,
+                     "recall takes a query and a time window")
+            // Args arrive as strings, so a numeric window has to be declared
+            // as one or it is dropped on the way in.
+            let minutes = recallProps?["minutes_ago"] as? [String: Any]
+            Check.ok(minutes?["type"] as? String == "STRING", "minutes_ago survives arg parsing")
             Check.ok(fns.first?["name"] as? String == "dispatch_openclaw_action", "openclaw tool declared")
             let ocParams = fns.first?["parameters"] as? [String: Any]
             Check.ok((ocParams?["required"] as? [String]) == ["instruction"], "instruction required")

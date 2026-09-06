@@ -79,6 +79,26 @@ app: install-dylib
 ## Accessibility — so only when main.swift, Info.plist or the entitlements
 ## actually change.
 host:
+# Re-freezing an existing bundle is the one irreversible thing in this file:
+# the new cdhash silently invalidates every TCC grant, and System Settings goes
+# on showing the toggles as ON while each request is denied. That failure cost
+# an hour to diagnose on 2026-09-06, because nothing about it looks like a
+# permissions problem from the outside. The warning below used to print *after*
+# the bundle was already gone, which is too late to be a warning at all.
+	@if [ -d "$(APPDIR)" ] && [ "$$FORCE_HOST" != "1" ]; then \
+	  echo "!! $(APPDIR) already exists, and re-freezing it will void Kweku's"; \
+	  echo "!! Screen Recording / Microphone / Accessibility grants — silently:"; \
+	  echo "!! the System Settings toggles stay ON while capture returns -3801."; \
+	  echo "!! Code changes never need this. 'make app' rebuilds the dylib and"; \
+	  echo "!! leaves the bundle's identity alone."; \
+	  if [ -t 0 ]; then \
+	    printf "!! Re-freeze anyway, and re-grant permissions by hand? [y/N] "; \
+	    read ans; case "$$ans" in [yY]*) ;; *) echo "==> aborted"; exit 1;; esac; \
+	  else \
+	    echo "!! Refusing in a non-interactive shell. Re-run with FORCE_HOST=1."; \
+	    exit 1; \
+	  fi; \
+	fi
 	@mkdir -p build/universal
 	@for arch in $(ARCHES); do \
 	  echo "==> compiling host $$arch"; \

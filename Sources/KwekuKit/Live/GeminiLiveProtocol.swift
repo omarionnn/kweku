@@ -69,6 +69,16 @@ public enum GeminiLiveProtocol {
             screen from this prompt, from the tools you have, or from earlier \
             conversation. If you have not received a frame, say so rather than \
             guessing; naming the wrong app is worse than admitting you missed it.
+
+            Some windows are deliberately withheld — password managers, files \
+            with secrets, private browsing. Those arrive as a "Screen hidden" \
+            card. When you see one, just tell him that window is private and \
+            you can't see it; never speculate about what it contained.
+
+            You also remember what has been on his screen. When he asks what he \
+            was doing, what an earlier error or page said, or to find something \
+            he saw before, call `recall_screen` instead of guessing — your \
+            memory of his screen is real and searchable, so use it.
             """
     }
 
@@ -125,6 +135,24 @@ public enum GeminiLiveProtocol {
                                         ],
                                     ],
                                     "required": ["instruction"],
+                                ],
+                            ],
+                            [
+                                "name": "recall_screen",
+                                "description": "Searches Kweku's local screen timeline — a record of what has been on Omari's screen. Use it whenever he asks what he was doing, what an earlier window/error/page said, or to find something he saw before. Prefer this over guessing.",
+                                "parameters": [
+                                    "type": "OBJECT",
+                                    "properties": [
+                                        "query": [
+                                            "type": "STRING",
+                                            "description": "Words to match against app names and window titles, e.g. 'safari docs' or 'build'. Leave empty to list recent activity.",
+                                        ],
+                                        "minutes_ago": [
+                                            "type": "STRING",
+                                            "description": "Only search the last N minutes, as a number. Omit to search the whole timeline.",
+                                        ],
+                                    ],
+                                    "required": [String](),
                                 ],
                             ],
                             [

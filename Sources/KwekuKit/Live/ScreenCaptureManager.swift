@@ -153,6 +153,21 @@ final class ScreenCaptureManager: NSObject, SCStreamDelegate, SCStreamOutput {
     private var lastFrameGeneration: UInt64 = 0
     private var generation: UInt64 = 0
 
+    /// Set when the current aim is a window that must not leave the machine.
+    /// Keyed by generation so a stale verdict can never outlive its window.
+    private var redaction: (generation: UInt64, reason: String)?
+
+    /// What is in front right now, for the timeline and the triage trigger.
+    private var currentApp = ""
+    private var currentTitle = ""
+
+    /// Told about every aim change: app, window title, whether it's redacted.
+    var onAim: ((String, String, Bool) -> Void)?
+
+    /// Told about every frame that goes out, so the screen timeline can decide
+    /// whether this instant is worth remembering. Called on `queue`.
+    var onMoment: ((_ app: String, _ title: String, _ jpeg: Data?, _ redacted: Bool) -> Void)?
+
     /// The current screen as JPEG, at most ~1s old. Nil before the first frame
     /// or when screen capture isn't permitted.
     func latestFrame() -> Data? {
@@ -169,10 +184,25 @@ final class ScreenCaptureManager: NSObject, SCStreamDelegate, SCStreamOutput {
     /// Open a new aim. The cache is *not* cleared — it stays readable for an
     /// OpenClaw dispatch — but its generation no longer matches, so no idle
     /// frame can re-send it as if it were the new window.
-    private func beginTarget() -> UInt64 {
+    private func beginTarget(app: String = "", title: String = "",
+                             redactedAs reason: String? = nil) -> UInt64 {
         frameLock.lock(); defer { frameLock.unlock() }
         generation &+= 1
+        currentApp = app
+        currentTitle = title
+        redaction = reason.map { (generation, $0) }
         return generation
+    }
+
+    /// Why this generation is being withheld, if it is.
+    private func redactionReason(for gen: UInt64) -> String? {
+        frameLock.lock(); defer { frameLock.unlock() }
+        return redaction?.generation == gen ? redaction?.reason : nil
+    }
+
+    private var currentWindow: (app: String, title: String) {
+        frameLock.lock(); defer { frameLock.unlock() }
+        return (currentApp, currentTitle)
     }
 
     private func cache(_ jpeg: Data, generation gen: UInt64) {
@@ -256,6 +286,7 @@ final class ScreenCaptureManager: NSObject, SCStreamDelegate, SCStreamOutput {
                 Self.dbg("frame#\(self.framesSent) resend(heartbeat) jpeg=\(jpeg.count)B")
             }
             self.onFrame?(jpeg)
+            self.noteMoment(jpeg)
         }
         beat.resume()
         heartbeat = beat
@@ -371,11 +402,26 @@ final class ScreenCaptureManager: NSObject, SCStreamDelegate, SCStreamOutput {
                 guard let content else { return }
 
                 if let frontID, let win = content.windows.first(where: { $0.windowID == frontID }) {
-                    Self.dbg("aim window id=\(frontID) '\(win.title ?? "")' \(Int(win.frame.width))x\(Int(win.frame.height))")
+                    let app = win.owningApplication?.applicationName ?? ""
+                    let title = win.title ?? ""
+                    // Decided here, before a filter exists, so a denied window
+                    // never reaches the encoder at all.
+                    let verdict = ScreenRedaction.verdict(
+                        for: .init(app: app, title: title),
+                        extraTerms: ScreenRedaction.userTerms,
+                        enabled: ScreenRedaction.enabled)
+                    Self.dbg("aim window id=\(frontID) '\(title)' app='\(app)' "
+                             + "\(Int(win.frame.width))x\(Int(win.frame.height)) "
+                             + "redacted=\(verdict.isRedacted)")
                     self.apply(filter: SCContentFilter(desktopIndependentWindow: win),
-                               size: ScreenTargeting.outputSize(for: win.frame.size))
+                               size: ScreenTargeting.outputSize(for: win.frame.size),
+                               app: app, title: title, redactedAs: verdict.reason)
                     self.targetWindowID = frontID
                     self.targetDisplayID = 0
+                    if let reason = verdict.reason {
+                        self.onIssue?("Screen hidden from Kweku — \(reason).")
+                    }
+                    self.onAim?(app, title, verdict.isRedacted)
                     return
                 }
                 // Fallback: the display that has keyboard focus (not .first —
@@ -389,9 +435,11 @@ final class ScreenCaptureManager: NSObject, SCStreamDelegate, SCStreamOutput {
                 Self.dbg("aim display id=\(display.displayID)")
                 self.apply(filter: SCContentFilter(display: display, excludingWindows: []),
                            size: ScreenTargeting.outputSize(for: CGSize(width: display.width,
-                                                             height: display.height), scale: 1))
+                                                             height: display.height), scale: 1),
+                           app: "Desktop", title: "whole display")
                 self.targetWindowID = 0
                 self.targetDisplayID = display.displayID
+                self.onAim?("Desktop", "whole display", false)
             }
         }
     }
@@ -399,7 +447,8 @@ final class ScreenCaptureManager: NSObject, SCStreamDelegate, SCStreamOutput {
     /// Point the existing stream at a new filter, or start one if this is the
     /// first target. Live retargeting keeps the session's video channel open —
     /// no gap, no renegotiation.
-    private func apply(filter: SCContentFilter, size: (width: Int, height: Int)) {
+    private func apply(filter: SCContentFilter, size: (width: Int, height: Int),
+                       app: String = "", title: String = "", redactedAs reason: String? = nil) {
         let config = SCStreamConfiguration()
         config.width = size.width
         config.height = size.height
@@ -410,8 +459,16 @@ final class ScreenCaptureManager: NSObject, SCStreamDelegate, SCStreamOutput {
 
         // New aim: cached pixels from the old window stop counting as "now",
         // and the next real frame goes out without waiting for the cadence.
-        let gen = beginTarget()
+        let gen = beginTarget(app: app, title: title, redactedAs: reason)
         queue.async { self.sendASAP = true }
+
+        // A withheld window still gets a frame every second — a placeholder
+        // card saying so. Going silent instead would be indistinguishable from
+        // the channel dying, which is the failure this whole path exists to
+        // prevent, and would leave the model narrating the window before it.
+        if reason != nil {
+            cache(Self.redactedFrame(), generation: gen)
+        }
 
         if let stream {
             stream.updateContentFilter(filter) { [weak self] err in
@@ -448,6 +505,10 @@ final class ScreenCaptureManager: NSObject, SCStreamDelegate, SCStreamOutput {
     private func seedFrame(filter: SCContentFilter, config: SCStreamConfiguration,
                            generation gen: UInt64) {
         guard #available(macOS 14.0, *) else { return }
+        // Withheld window: the placeholder is already cached and the heartbeat
+        // will carry it. Rendering the real thing "just for the seed" would
+        // defeat the entire point of the verdict.
+        guard redactionReason(for: gen) == nil else { return }
         SCScreenshotManager.captureSampleBuffer(contentFilter: filter, configuration: config) {
             [weak self] buffer, error in
             guard let self, error == nil, let buffer, buffer.isValid,
@@ -462,6 +523,7 @@ final class ScreenCaptureManager: NSObject, SCStreamDelegate, SCStreamOutput {
                 self.lastSentAt = Date()
                 Self.dbg("seed gen=\(gen) jpeg=\(jpeg.count)B")
                 self.onFrame?(jpeg)
+                self.noteMoment(jpeg)
             }
         }
     }
@@ -475,12 +537,16 @@ final class ScreenCaptureManager: NSObject, SCStreamDelegate, SCStreamOutput {
         // `.complete`/`.started` one carries pixels; the rest say "nothing
         // changed". Treat an unreadable status as fresh and let the image
         // buffer decide, so an OS change can't silently mute the channel.
+        let now = Date()
+        let gen = currentGeneration
+
+        // Withheld window: drop the buffer without ever reading its pixels.
+        // The heartbeat keeps the cadence alive with the placeholder card.
+        guard redactionReason(for: gen) == nil else { return }
+
         let status = Self.frameStatus(of: sampleBuffer)
         let maybeFresh = status == nil || status == .complete || status == .started
         let pixelBuffer = maybeFresh ? CMSampleBufferGetImageBuffer(sampleBuffer) : nil
-
-        let now = Date()
-        let gen = currentGeneration
         let action = ScreenTargeting.frameAction(
             hasNewPixels: pixelBuffer != nil,
             cacheMatchesTarget: cachedFrame(for: gen) != nil,
@@ -512,7 +578,49 @@ final class ScreenCaptureManager: NSObject, SCStreamDelegate, SCStreamOutput {
                      + "jpeg=\(jpeg.count)B")
         }
         onFrame?(jpeg)
+        noteMoment(jpeg)
     }
+
+    /// Offer this instant to the screen timeline. The store decides whether it
+    /// is worth keeping — this path runs once a second and must stay cheap.
+    private func noteMoment(_ jpeg: Data?) {
+        guard let onMoment else { return }
+        let window = currentWindow
+        onMoment(window.app, window.title, jpeg, redactionReason(for: currentGeneration) != nil)
+    }
+
+    /// The card sent in place of a window that must not leave the machine.
+    ///
+    /// It says what it is, so the model can tell Omari "that one's private"
+    /// rather than reporting a black screen or, worse, describing whatever it
+    /// last saw.
+    static func redactedFrame() -> Data {
+        if let cached = cachedRedactedFrame { return cached }
+        let size = NSSize(width: 960, height: 540)
+        let image = NSImage(size: size)
+        image.lockFocus()
+        NSColor(calibratedWhite: 0.06, alpha: 1).setFill()
+        NSRect(origin: .zero, size: size).fill()
+        let style = NSMutableParagraphStyle()
+        style.alignment = .center
+        let text = "Screen hidden\n\nThis window is private and is not being shared.\n"
+            + "Tell Omari you cannot see this one."
+        text.draw(in: NSRect(x: 60, y: 180, width: size.width - 120, height: 220),
+                  withAttributes: [
+                    .font: NSFont.systemFont(ofSize: 34, weight: .semibold),
+                    .foregroundColor: NSColor(calibratedWhite: 0.85, alpha: 1),
+                    .paragraphStyle: style,
+                  ])
+        image.unlockFocus()
+        let data = image.tiffRepresentation
+            .flatMap { NSBitmapImageRep(data: $0) }
+            .flatMap { $0.representation(using: .jpeg, properties: [.compressionFactor: 0.6]) }
+            ?? Data()
+        cachedRedactedFrame = data
+        return data
+    }
+
+    private static var cachedRedactedFrame: Data?
 
     func stream(_ stream: SCStream, didStopWithError error: Error) {
         self.stream = nil

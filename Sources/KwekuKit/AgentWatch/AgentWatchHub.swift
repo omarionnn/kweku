@@ -14,6 +14,9 @@ public final class AgentWatchHub: ObservableObject {
     private let openClaw = OpenClawBridgeManager.shared
     private var externalCleanup: [String: DispatchWorkItem] = [:]
     private var attention = AgentAttention.Ledger()
+    /// When each session was first observed, so a report can say what changed
+    /// since — pruned with the table so it can't grow forever.
+    private var firstSeen: [String: Date] = [:]
 
     /// Raised when a background session has sat waiting long enough to be
     /// worth saying out loud. The payload is a ready-made instruction for the
@@ -106,6 +109,38 @@ public final class AgentWatchHub: ObservableObject {
         }
     }
 
+    /// Open the session's working directory in Finder — the row action for
+    /// "which repo is this, actually". Silently does nothing for gateway and
+    /// synthetic sessions, which have no directory of their own.
+    @discardableResult
+    public func reveal(_ session: AgentSession) -> Bool {
+        guard !session.cwd.isEmpty else { return false }
+        var isDirectory: ObjCBool = false
+        guard FileManager.default.fileExists(atPath: session.cwd, isDirectory: &isDirectory),
+              isDirectory.boolValue else { return false }
+        NSWorkspace.shared.selectFile(nil, inFileViewerRootedAtPath: session.cwd)
+        return true
+    }
+
+    /// Interrupt a running session — exactly what Ctrl-C in its terminal does.
+    ///
+    /// Deliberately `SIGINT` and not `SIGKILL`: agents catch it, unwind, and
+    /// leave their transcript intact, so a mis-click on a 14-point button costs
+    /// a turn rather than an hour of work. Only sessions with a real process
+    /// can be interrupted; gateway sessions have no pid to signal.
+    @discardableResult
+    public func interrupt(_ session: AgentSession) -> Bool {
+        guard session.pid > 0, case .terminal = session.destination else { return false }
+        return kill(session.pid, SIGINT) == 0
+    }
+
+    /// Whether the interrupt action applies — used to hide the button rather
+    /// than offer one that can't work.
+    public func canInterrupt(_ session: AgentSession) -> Bool {
+        guard session.pid > 0, case .terminal = session.destination else { return false }
+        return session.state == .working
+    }
+
     /// Feed a synthetic session (OpenClaw / voice dispatches) into the same
     /// table so ember/bang reactions and priority apply uniformly. `waiting`
     /// entries self-clean after 2 minutes.
@@ -131,12 +166,30 @@ public final class AgentWatchHub: ObservableObject {
     /// waiting is announced at most once, and a session that goes back to work
     /// clears its own record.
     private func sweepAttention() {
+        let now = Date()
+        // Baseline for "what did it do": commits are counted from when this
+        // session first appeared. Recorded before the early return so the
+        // clock starts when Kweku noticed the session, not when it first had
+        // something to say about it.
+        for id in table.sessions.keys where firstSeen[id] == nil { firstSeen[id] = now }
+        firstSeen = firstSeen.filter { table.sessions[$0.key] != nil }
+
         guard onAttention != nil else { return }
         let (alerts, ledger) = AgentAttention.alerts(
-            sessions: Array(table.sessions.values), ledger: attention, now: Date())
+            sessions: Array(table.sessions.values), ledger: attention, now: now)
         attention = ledger
         guard !alerts.isEmpty else { return }
-        onAttention?(AgentAttention.prompt(for: alerts))
+
+        // git is disk I/O on someone else's repo — never on the main thread,
+        // and never blocking the notch's run loop.
+        let entries = alerts.compactMap { alert -> (AgentSession, Date)? in
+            guard let session = table.sessions[alert.sessionID] else { return nil }
+            return (session, firstSeen[alert.sessionID] ?? session.stateSince)
+        }
+        Task.detached(priority: .utility) { [weak self] in
+            let read = entries.map { ($0.0, AgentReport.read(cwd: $0.0.cwd, since: $0.1)) }
+            await MainActor.run { self?.onAttention?(AgentReport.prompt(for: read, now: now)) }
+        }
     }
 
     /// Install the omp extension + Claude hooks (explicit user action).

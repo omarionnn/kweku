@@ -9,7 +9,78 @@ enum CompanionTests {
         redaction()
         timeline()
         attention()
+        report()
         triage()
+    }
+
+    // MARK: - 3b. What the finished agent actually did
+
+    static func report() {
+        Check.run("shortstat is read clause by clause, not by position") {
+            let full = AgentReport.parseShortstat(
+                " 13 files changed, 506 insertions(+), 105 deletions(-)")
+            Check.ok(full == (13, 506, 105), "full line")
+            // A pure-insertion diff omits the deletions clause entirely; a
+            // positional parse reads 0 files or crashes on it.
+            let adds = AgentReport.parseShortstat(" 2 files changed, 40 insertions(+)")
+            Check.ok(adds == (2, 40, 0), "no deletions clause")
+            let dels = AgentReport.parseShortstat(" 1 file changed, 9 deletions(-)")
+            Check.ok(dels == (1, 0, 9), "singular 'file', no insertions clause")
+            Check.ok(AgentReport.parseShortstat("") == (0, 0, 0), "empty diff")
+        }
+
+        Check.run("a report states evidence, never a verdict") {
+            let uncommitted = AgentReport.Work(files: 13, insertions: 506, deletions: 105,
+                                               branch: "main")
+            let text = AgentReport.summary(uncommitted) ?? ""
+            Check.ok(text.contains("13 files"), "counts the files")
+            Check.ok(text.contains("+506/−105"), "carries the line counts")
+            Check.ok(text.contains("not yet committed"), "says the work is unlanded")
+            Check.ok(text.contains("on branch main"), "names the branch")
+
+            let committed = AgentReport.Work(commits: ["Fix the blind notch", "Add stats panel"])
+            let two = AgentReport.summary(committed) ?? ""
+            Check.ok(two.contains("committed 2 changes"), "counts commits")
+            Check.ok(two.contains("Fix the blind notch"), "quotes the subjects")
+
+            let many = AgentReport.Work(commits: ["a", "b", "c", "d", "e"])
+            Check.ok((AgentReport.summary(many) ?? "").contains("and 2 more"),
+                     "long commit lists are elided, not recited")
+
+            Check.ok(AgentReport.summary(AgentReport.Work()) == nil,
+                     "nothing changed -> nothing to report")
+            Check.ok(AgentReport.summary(AgentReport.Work(untracked: 3))?
+                        .contains("3 new files") == true, "untracked files count as work")
+        }
+
+        Check.run("the announcement addresses Omari and forbids embellishment") {
+            let now = Date(timeIntervalSince1970: 6_000_000)
+            let session = AgentSession(id: "a", cwd: "/Users/o/sk-triage", pid: 1,
+                                       state: .waiting, lastUpdated: now,
+                                       stateSince: now.addingTimeInterval(-120),
+                                       source: "claude")
+            let work = AgentReport.Work(files: 14, insertions: 420, deletions: 96,
+                                        commits: ["Fix reply mismatch"], branch: "main")
+            let prompt = AgentReport.prompt(for: [(session, work)], now: now)
+
+            Check.ok(prompt.contains("Omari, I'd like to report that"),
+                     "opens the way he asked to be addressed")
+            Check.ok(prompt.contains("sk-triage"), "names the project")
+            Check.ok(prompt.contains("claude"), "names the harness")
+            Check.ok(prompt.contains("14 files"), "carries the evidence")
+            Check.ok(prompt.contains("Fix reply mismatch"), "carries the commit subject")
+            Check.ok(prompt.contains("not from Omari"), "marked as a system notice")
+            // The whole risk: a finished agent usually did succeed, so the
+            // model will happily say so on no evidence at all.
+            Check.ok(prompt.contains("do not claim it") && prompt.contains("succeeded"),
+                     "forbids claiming success")
+            Check.ok(prompt.contains("reporting a diff, not a verdict"), "states the limit")
+
+            // No repo, or nothing found: still announces, without inventing.
+            let bare = AgentReport.prompt(for: [(session, nil)], now: now)
+            Check.ok(bare.contains("no file changes it could find"),
+                     "says it found nothing rather than implying nothing happened")
+        }
     }
 
     // MARK: - 1. Redaction

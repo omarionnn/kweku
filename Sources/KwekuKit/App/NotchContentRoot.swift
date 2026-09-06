@@ -68,6 +68,7 @@ struct NotchContentRoot: View {
     private var rim: NotchRimStyle {
         NotchRimStyle.resolve(attention: creature.agentWaiting,
                               live: live.running,
+                              speaking: live.speaking,
                               voiceLevel: creature.voiceLevel,
                               working: creature.agentWorking,
                               activity: creature.agentActivity)
@@ -107,7 +108,13 @@ struct NotchContentRoot: View {
             updateSize()
         }
         .onChange(of: vm.tapCount) { _ in
-            if !music.isShowing { agents.focusCurrent() }
+            guard !music.isShowing else { return }
+            // A click on the notch means "take me to whatever wants me" — the
+            // session behind the exclamation eyes. Say so when there's nothing
+            // to open; a click that silently does nothing reads as broken.
+            if !agents.focusCurrent(), agents.table.count > 0 {
+                showToast("Nothing to open for that session")
+            }
         }
         .onChange(of: vm.cycleSteps) { steps in
             let delta = steps - lastCycleStep
@@ -126,6 +133,7 @@ struct NotchContentRoot: View {
             creature.setLive(running)
             updateSize()
         }
+        .onChange(of: live.composing) { creature.setLiveThinking($0) }
         .onChange(of: mode) { m in
             UserDefaults.standard.set(m.rawValue, forKey: "nookMode")
             weather.setActive(m == .weather)
@@ -332,6 +340,12 @@ struct NotchContentRoot: View {
             Button("Set City…") { promptForCity() }
         }
         Button(hidden ? "Show" : "Hide") { hidden.toggle() }
+        // The shelf's own escape hatch. Per-item Remove needs you to hover the
+        // notch and hit a 40pt thumbnail; this always reaches, and it's the
+        // only way out when an item's thumbnail won't render.
+        if !shelf.items.isEmpty {
+            Button("Clear Shelf (\(shelf.items.count))", role: .destructive) { shelf.clear() }
+        }
         Divider()
         if live.running {
             Button("Stop Kweku Live") { live.stop() }

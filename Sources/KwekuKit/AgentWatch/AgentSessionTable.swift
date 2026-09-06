@@ -1,5 +1,19 @@
 import Foundation
 
+/// Where a session actually lives, and so what "take me there" has to do.
+/// Not every waiting session is a terminal window: the synthetic entries fed
+/// in by `AgentWatchHub.noteExternal` are gateway conversations with no
+/// process behind them, and walking a process tree from their `pid` of 0 can
+/// only ever fail.
+public enum AgentDestination: Equatable, Sendable {
+    /// A live process whose owning terminal window can be raised.
+    case terminal(pid: Int32)
+    /// An OpenClaw gateway session — open the Control UI instead.
+    case gateway
+    /// Nothing to open: the process is gone and it isn't a gateway session.
+    case unreachable
+}
+
 /// One tracked coding-agent session.
 public struct AgentSession: Equatable, Sendable {
     public var id: String
@@ -27,6 +41,17 @@ public struct AgentSession: Equatable, Sendable {
         }
     }
 
+    /// Identifier the hub uses for the synthetic OpenClaw session.
+    public static let gatewayID = "openclaw"
+
+    /// What a click on this session should do. Pure, so the routing is
+    /// testable without a process table or a browser.
+    public var destination: AgentDestination {
+        if pid > 0 { return .terminal(pid: pid) }
+        if id == Self.gatewayID { return .gateway }
+        return .unreachable
+    }
+
     /// Label for the agent panel: the repo/folder the session runs in. The
     /// synthetic sessions fed in by `AgentWatchHub.noteExternal` carry no cwd,
     /// so they fall back to a titled form of their id.
@@ -35,7 +60,7 @@ public struct AgentSession: Equatable, Sendable {
             let name = (cwd as NSString).lastPathComponent
             if !name.isEmpty && name != "/" { return name }
         }
-        if id == "openclaw" { return "OpenClaw" }
+        if id == Self.gatewayID { return "OpenClaw" }
         return String(id.prefix(8))
     }
 }

@@ -21,15 +21,26 @@ public enum NotchRimStyle: Equatable {
     /// `resolve`, which only ranks the signals that mean something.
     case album(colour: Color, playing: Bool)
 
-    /// Priority order for the three signals the notch can carry at once.
-    /// Attention interrupts everything (it's the one with a deadline), then a
-    /// Live session, then background work.
-    public static func resolve(attention: Bool, live: Bool, voiceLevel: CGFloat,
-                               working: Bool,
+    /// Priority order for the signals the notch can carry at once.
+    ///
+    /// Attention interrupts everything — it's the one with a deadline. After
+    /// that the ranking turns on whether Kweku is *actually speaking*: while a
+    /// sentence is coming out, the rim is his mouth moving and nothing may take
+    /// it. The instant he goes quiet, work outranks the idle Live glow, because
+    /// a dispatched task is the only thing left worth watching — and it's
+    /// exactly the moment the old ordering went blank, holding a decorative
+    /// breathing gradient over a running build.
+    ///
+    /// `speaking` is the audio engine's drain state rather than `voiceLevel`,
+    /// which crosses any threshold you pick several times a syllable and would
+    /// strobe the rim between two styles.
+    public static func resolve(attention: Bool, live: Bool, speaking: Bool = false,
+                               voiceLevel: CGFloat, working: Bool,
                                activity: AgentActivity? = nil) -> NotchRimStyle {
         if attention { return .attention }
-        if live { return .live(level: voiceLevel) }
+        if live && speaking { return .live(level: voiceLevel) }
         if working { return .working(activity: activity ?? .thinking) }
+        if live { return .live(level: voiceLevel) }
         return .none
     }
 }

@@ -7,6 +7,82 @@ enum AgentWatchTests {
         table()
         walk()
         installers()
+        destinations()
+        staleHooks()
+    }
+
+    // MARK: Where a click goes
+
+    static func destinations() {
+        var table = AgentSessionTable()
+        func session(id: String, pid: Int32, state: AgentState) -> AgentSession {
+            table.apply(AgentEvent(sessionID: id, cwd: "", pid: pid, state: state))
+            return table.sessions[id]!
+        }
+
+        Check.run("a live process routes to its terminal") {
+            Check.ok(session(id: "a", pid: 4321, state: .waiting).destination == .terminal(pid: 4321),
+                     "there's a window to raise")
+        }
+        Check.run("the gateway session routes to the Control UI") {
+            // The regression: this is the session behind almost every
+            // exclamation-eye flash, it has no process, and sending it through
+            // the terminal walk from pid 0 could only ever fail silently.
+            Check.ok(session(id: "openclaw", pid: 0, state: .waiting).destination == .gateway,
+                     "no process, but it has an address")
+        }
+        Check.run("anything else is honestly unreachable") {
+            Check.ok(session(id: "ghost", pid: 0, state: .waiting).destination == .unreachable,
+                     "so the click can say so instead of doing nothing")
+        }
+        Check.run("the Control UI address tracks the socket's host and port") {
+            let dash = GatewayProtocol.dashboardURL
+            Check.ok(dash.scheme == "http", "browsable scheme, got \(dash.scheme ?? "nil")")
+            Check.ok(dash.host == GatewayProtocol.defaultURL.host, "same host")
+            Check.ok(dash.port == GatewayProtocol.defaultURL.port, "same port")
+        }
+    }
+
+    // MARK: Pre-rebrand hook cleanup
+
+    static func staleHooks() {
+        let tmp = FileManager.default.temporaryDirectory
+            .appendingPathComponent("kweku-stale-tests-\(UUID().uuidString)")
+        defer { try? FileManager.default.removeItem(at: tmp) }
+
+        Check.run("a pre-rebrand install is swept out, not installed alongside") {
+            let file = tmp.appendingPathComponent("settings.json")
+            try? FileManager.default.createDirectory(at: file.deletingLastPathComponent(),
+                                                     withIntermediateDirectories: true)
+            // Exactly what an older build left behind: lifecycle hooks only,
+            // pointed at a support directory that no longer exists.
+            var old: [String: Any] = [:]
+            for event in AgentWatchSetup.claudeLifecycleEvents {
+                old[event] = [["hooks": [["type": "command",
+                                          "command": "python3 -c '# charlie-agent-watch Charlie/agent.sock'"]]]]
+            }
+            // A hook of the user's own, on the same event, must survive.
+            old["Stop"] = [
+                ["hooks": [["type": "command", "command": "python3 -c '# charlie-agent-watch'"]]],
+                ["hooks": [["type": "command", "command": "say done"]]],
+            ]
+            let data = try? JSONSerialization.data(withJSONObject: ["hooks": old])
+            try? data?.write(to: file)
+
+            let setup = AgentWatchSetup(ompExtensionsDir: tmp.appendingPathComponent("ext"),
+                                        claudeSettingsFile: file)
+            Check.ok(!setup.claudeInstalled, "stale marker is not our marker")
+            Check.ok(setup.installClaude(), "install succeeds")
+
+            let out = (try? String(contentsOf: file, encoding: .utf8)) ?? ""
+            Check.ok(!out.contains("charlie-agent-watch"),
+                     "every dead-socket hook is gone")
+            Check.ok(out.contains("say done"), "the user's own hook is untouched")
+            Check.ok(setup.claudeInstalled, "and ours is fully installed")
+            let markers = out.components(separatedBy: "kweku-agent-watch").count - 1
+            Check.ok(markers == AgentWatchSetup.claudeHookEvents.count,
+                     "one entry per event (got \(markers))")
+        }
     }
 
     // MARK: Event parsing (both wire formats)

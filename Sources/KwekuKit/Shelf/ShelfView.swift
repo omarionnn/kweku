@@ -27,7 +27,9 @@ struct ShelfView: View {
                         )
                         .shadow(color: .black.opacity(0.4), radius: 2, y: 1)
                         .offset(x: CGFloat(index) * fan)
-                        .contextMenu { Button("Remove", role: .destructive) { store.remove(item) } }
+                        // No `.contextMenu` here — the thumbnail is an AppKit
+                        // view that receives the right-click itself, and it
+                        // serves its own Remove menu (see `ShelfThumb`).
                 }
             }
             .frame(width: stackWidth, height: thumb, alignment: .leading)

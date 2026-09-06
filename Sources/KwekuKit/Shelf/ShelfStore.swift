@@ -57,17 +57,26 @@ public final class ShelfStore: ObservableObject {
     // MARK: - Mutation
 
     public func remove(_ item: ShelfItem) {
-        if let blob = item.blobFile {
-            try? FileManager.default.removeItem(at: Self.blobsDir.appendingPathComponent(blob))
-        }
+        discardBlob(of: item)
         items.removeAll { $0.id == item.id }
         thumbnailCache[item.id] = nil
         save()
     }
 
+    /// Empty the shelf in one write. The blobs go first, then the list — the
+    /// old form called `remove` per item *while iterating that same list*, and
+    /// re-saved the file once per item to reach the same end state.
     public func clear() {
-        for item in items where item.blobFile != nil { remove(item) }
-        items.removeAll(); thumbnailCache.removeAll(); save()
+        for item in items { discardBlob(of: item) }
+        items.removeAll()
+        thumbnailCache.removeAll()
+        save()
+    }
+
+    /// Delete an item's backing image bytes, if it has any.
+    private func discardBlob(of item: ShelfItem) {
+        guard let blob = item.blobFile else { return }
+        try? FileManager.default.removeItem(at: Self.blobsDir.appendingPathComponent(blob))
     }
 
     private func add(_ item: ShelfItem) {

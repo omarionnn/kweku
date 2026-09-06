@@ -9,6 +9,49 @@ enum NotchUITests {
         scrollCycler()
         modeCycle()
         panelLabels()
+        rimPriority()
+    }
+
+    // MARK: Rim priority
+
+    /// Which of the notch's simultaneous signals wins the outline.
+    static func rimPriority() {
+        func rim(attention: Bool = false, live: Bool = false, speaking: Bool = false,
+                 level: CGFloat = 0, working: Bool = false,
+                 activity: AgentActivity? = nil) -> NotchRimStyle {
+            NotchRimStyle.resolve(attention: attention, live: live, speaking: speaking,
+                                  voiceLevel: level, working: working, activity: activity)
+        }
+
+        Check.run("nothing happening leaves the rim undrawn") {
+            Check.ok(rim() == .none, "no signal, no stroke")
+        }
+        Check.run("attention beats everything else") {
+            Check.ok(rim(attention: true, live: true, speaking: true, working: true) == .attention,
+                     "a session waiting on Omari is the one with a deadline")
+        }
+        Check.run("a speaking Kweku owns the rim over background work") {
+            Check.ok(rim(live: true, speaking: true, level: 0.5,
+                         working: true, activity: .tooling) == .live(level: 0.5),
+                     "the rim is his mouth while a sentence is coming out")
+        }
+        Check.run("work shows through a silent live session") {
+            // The regression this ordering exists for: dispatch a task by voice
+            // and the tool comet was suppressed by the idle Live glow for the
+            // whole run — the one moment the work was worth watching.
+            Check.ok(rim(live: true, speaking: false, working: true, activity: .tooling)
+                        == .working(activity: .tooling),
+                     "silent live session yields to the running tool")
+            Check.ok(rim(live: true, speaking: false, working: true, activity: .thinking)
+                        == .working(activity: .thinking), "same for reasoning")
+        }
+        Check.run("an idle live session still glows when there is no work") {
+            Check.ok(rim(live: true, level: 0.2) == .live(level: 0.2), "falls back to the live rim")
+        }
+        Check.run("working with no reported phase reads as thinking") {
+            Check.ok(rim(working: true) == .working(activity: .thinking),
+                     "the calmest thing to be wrong about")
+        }
     }
 
     // MARK: Scroll cycler

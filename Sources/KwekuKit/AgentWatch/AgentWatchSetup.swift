@@ -129,6 +129,32 @@ public struct AgentWatchSetup {
         }
     }
 
+    /// Markers written by pre-rebrand builds. Their commands point at
+    /// `~/Library/Application Support/Charlie/agent.sock`, a path that stopped
+    /// existing when the support directory was renamed — so they fire on every
+    /// turn, fail silently, and no event ever reaches the notch. Installing
+    /// alongside them isn't enough; they have to come out.
+    static let staleMarkers = ["charlie-agent-watch", "notchling-agent-watch"]
+
+    /// Drop this event's stale entries, keeping every hook that isn't ours.
+    static func pruningStale(_ entry: Any?) -> [[String: Any]] {
+        ((entry as? [[String: Any]]) ?? []).compactMap { matcher in
+            // Anything not shaped like a matcher we understand is passed
+            // through untouched — this file is the user's, not ours.
+            guard let hooks = matcher["hooks"] as? [[String: Any]] else { return matcher }
+            var matcher = matcher
+            let kept = hooks.filter { hook in
+                let command = (hook["command"] as? String) ?? ""
+                return !staleMarkers.contains { command.contains($0) }
+            }
+            // A matcher that held nothing but our stale hook goes too, rather
+            // than being left behind as an empty entry.
+            guard !kept.isEmpty else { return nil }
+            matcher["hooks"] = kept
+            return matcher
+        }
+    }
+
     /// Merge our hooks into settings.json, preserving everything already there.
     @discardableResult
     public func installClaude() -> Bool {
@@ -145,6 +171,14 @@ public struct AgentWatchSetup {
         // tool. The lifecycle hooks take no matcher.
         var toolEntry = command
         toolEntry["matcher"] = "*"
+
+        // Sweep pre-rebrand entries out of every event first — they can sit on
+        // events we no longer install, and each one is a dead socket write on
+        // every turn.
+        for event in Array(hooks.keys) {
+            let pruned = Self.pruningStale(hooks[event])
+            hooks[event] = pruned.isEmpty ? nil : pruned
+        }
 
         for event in Self.claudeHookEvents {
             var matchers = (hooks[event] as? [[String: Any]]) ?? []

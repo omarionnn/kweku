@@ -49,7 +49,7 @@ public final class CreatureState: ObservableObject {
 
     public func setLive(_ on: Bool) {
         if on != liveMode { liveMode = on }
-        if !on { voiceLevel = 0 }
+        if !on { voiceLevel = 0; setLiveThinking(false) }
     }
 
     // Idle thresholds (seconds of no nearby input).
@@ -68,6 +68,11 @@ public final class CreatureState: ObservableObject {
     private var bangWork: DispatchWorkItem?
     private var ponderWork: DispatchWorkItem?
     private var tableWaiting = false
+    // The two independent sources of "Kweku is busy", merged by `recomputeWork`
+    // into the single pair of published values the rim and the face read.
+    private var tableWorking = false
+    private var tableActivity: AgentActivity?
+    private var liveThinking = false
     private var typingTimer: Timer?
     private var typingNow = false
     private var micActive = false
@@ -147,8 +152,9 @@ public final class CreatureState: ObservableObject {
     /// `activity` refines *working*: it selects the creature's demeanour
     /// (pondering upward while it reasons, narrow-eyed while a tool runs).
     public func setAgents(working: Bool, waiting: Bool, activity: AgentActivity? = nil) {
-        if working != agentWorking { agentWorking = working }
-        setActivity(working ? (activity ?? .thinking) : nil)
+        tableWorking = working
+        tableActivity = activity
+        recomputeWork()
         guard waiting != tableWaiting else { return }
         tableWaiting = waiting
         bangWork?.cancel(); bangWork = nil
@@ -165,6 +171,27 @@ public final class CreatureState: ObservableObject {
         } else {
             agentWaiting = false
         }
+    }
+
+    /// Kweku's own thinking beat, from the Live session — the pause after Omari
+    /// finishes speaking and before the reply starts. It feeds the same channel
+    /// as a coding agent's `.thinking` on purpose: it *is* the same event, and
+    /// it should look identical whether the reasoning is happening in a voice
+    /// session or in a terminal on the other side of the desk.
+    public func setLiveThinking(_ on: Bool) {
+        guard on != liveThinking else { return }
+        liveThinking = on
+        recomputeWork()
+    }
+
+    /// Merge the agent table and the Live session into the published pair.
+    /// A real session outranks Kweku's own pause: its work is the part you
+    /// can't see, and it reports a phase this couldn't otherwise infer.
+    private func recomputeWork() {
+        let working = tableWorking || liveThinking
+        if working != agentWorking { agentWorking = working }
+        setActivity(tableWorking ? (tableActivity ?? .thinking)
+                                 : (liveThinking ? .thinking : nil))
     }
 
     private func setActivity(_ next: AgentActivity?) {

@@ -65,15 +65,32 @@ public final class AgentWatchHub: ObservableObject {
     public var anyWorking: Bool { table.anyWorking }
     public var anyWaiting: Bool { table.anyWaiting }
 
-    /// Click-to-focus the most relevant session's terminal window.
-    public func focusCurrent() {
-        guard let target = table.focusTarget() else { return }
-        TerminalFocus.focus(session: target)
+    /// Click-to-focus the most relevant session — the one the exclamation eyes
+    /// are about, since `focusTarget` ranks waiting sessions first.
+    /// Returns false when there was nothing to open, so the caller can say so
+    /// rather than letting the click land on silence.
+    @discardableResult
+    public func focusCurrent() -> Bool {
+        guard let target = table.focusTarget() else { return false }
+        return focus(target)
     }
 
-    /// Focus one specific session — the agent panel's row action.
-    public func focus(_ session: AgentSession) {
-        TerminalFocus.focus(session: session)
+    /// Go to one specific session — the agent panel's row action.
+    ///
+    /// Routes on where the session actually lives. A gateway session has no
+    /// process and no window; sending it through `TerminalFocus` walks a
+    /// parent-pid chain from 0 and always fails, which is why clicking a
+    /// waiting OpenClaw session used to do nothing at all.
+    @discardableResult
+    public func focus(_ session: AgentSession) -> Bool {
+        switch session.destination {
+        case .terminal:
+            return TerminalFocus.focus(session: session)
+        case .gateway:
+            return NSWorkspace.shared.open(GatewayProtocol.dashboardURL)
+        case .unreachable:
+            return false
+        }
     }
 
     /// Feed a synthetic session (OpenClaw / voice dispatches) into the same

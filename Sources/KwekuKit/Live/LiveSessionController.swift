@@ -17,6 +17,22 @@ public final class LiveSessionController: ObservableObject {
     /// replaced wholesale by the final transcript for the same utterance.
     @Published public private(set) var heard = ""
 
+    /// True while audio is actually draining to the speaker. Published so the
+    /// rim can tell "Kweku is talking" from "a Live session happens to be
+    /// open" — two states the old single `running` flag couldn't separate.
+    @Published public private(set) var speaking = false
+
+    /// True from the moment Omari stops talking until Kweku starts. It is the
+    /// one beat of a voice conversation with nothing to see or hear, and it's
+    /// where the whole "is this thing working?" doubt lives — so the notch
+    /// spends it wearing the thinking rim instead of the idle Live glow.
+    @Published public private(set) var composing = false
+
+    /// Backstop for `composing`: every path that ends a turn clears it, but a
+    /// silently dropped turn must not leave the aurora burning indefinitely.
+    private var composeWatchdog: DispatchWorkItem?
+    private let composeCeiling: TimeInterval = 45
+
     /// Interim transcripts are a running best guess, so they replace rather
     /// than append; finals are fragments of one utterance, so they accumulate.
     private var heardIsInterim = false
@@ -78,6 +94,10 @@ public final class LiveSessionController: ObservableObject {
         audio.onSpeakingChanged = { [weak self] speaking in
             MainActor.assumeIsolated {
                 guard let self else { return }
+                self.speaking = speaking
+                // Sound coming out is the definitive end of the thinking beat,
+                // whatever the transcript events did or didn't say.
+                if speaking { self.setComposing(false) }
                 // A natural drain means the sentence was fully said, so the
                 // transcripts can go. A barge-in is handled by `.interrupted`,
                 // which must not wipe `heard` out from under a live utterance.
@@ -107,8 +127,26 @@ public final class LiveSessionController: ObservableObject {
         audio.stop()
         client.disconnect()
         running = false
+        speaking = false
+        setComposing(false)
         clearTranscripts()
         memory.save()
+    }
+
+    /// Enter or leave the thinking beat, arming the watchdog on the way in so
+    /// a turn that dies without a terminal event still releases the rim.
+    private func setComposing(_ on: Bool) {
+        composeWatchdog?.cancel(); composeWatchdog = nil
+        if composing != on { composing = on }
+        // Re-arm on every entry, not just the transition: each fresh fragment
+        // is proof the turn is still alive, so the ceiling measures silence
+        // since the last sign of life rather than since the turn began.
+        guard on else { return }
+        let work = DispatchWorkItem { [weak self] in
+            MainActor.assumeIsolated { self?.setComposing(false) }
+        }
+        composeWatchdog = work
+        DispatchQueue.main.asyncAfter(deadline: .now() + composeCeiling, execute: work)
     }
 
     /// Wipe Kweku's long-term conversational memory (menu action).
@@ -163,6 +201,7 @@ public final class LiveSessionController: ObservableObject {
             interrupting = false
 
             screen.noteUserTurn()        // user barged in: refresh their view
+            setComposing(false)          // Omari has the floor back
             // Only the caption: barge-in means Omari is mid-sentence, so
             // `heard` is actively filling and must not be wiped under him.
             caption = ""
@@ -175,9 +214,14 @@ public final class LiveSessionController: ObservableObject {
                 heard = heardIsInterim ? text : heard + text
                 heardIsInterim = false
                 memory.append(role: "Omari", fragment: text)
+                // A finalised fragment means Omari's utterance has landed and
+                // the turn is Kweku's now. Interim guesses don't count — they
+                // arrive while he's still mid-word.
+                setComposing(true)
             }
 
         case .spokenTranscript(let text):
+            setComposing(false)          // words are forming; the beat is over
             caption += text
             memory.append(role: "Kweku", fragment: text)
         case .toolCall(let id, let name, let args):
@@ -198,6 +242,7 @@ public final class LiveSessionController: ObservableObject {
         case .goAway:
             status = "server ending session"
         case .turnComplete:
+            setComposing(false)          // nothing more is coming for this turn
             audio.flushPlayback()        // play out the sub-block tail
             screen.noteUserTurn()        // user's turn: next frame is fresh
             memory.save()                // cheap; keeps memory crash-safe

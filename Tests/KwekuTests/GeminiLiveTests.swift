@@ -4,6 +4,7 @@ import Foundation
 enum GeminiLiveTests {
     static func all() {
         setupFrame()
+        visionPersona()
         mediaFrames()
         parser()
         audioMath()
@@ -42,18 +43,51 @@ enum GeminiLiveTests {
         }
     }
 
+    static func visionPersona() {
+        Check.run("a blind session is never told it can see") {
+            let sighted = GeminiLiveProtocol.systemInstruction(visionAvailable: true)
+            Check.ok(sighted.contains("see Omari's screen in real time"), "sighted claims sight")
+            Check.ok(!sighted.lowercased().contains("you are currently blind"),
+                     "sighted is not told it is blind")
+
+            let blind = GeminiLiveProtocol.systemInstruction(
+                visionAvailable: false, visionIssue: "Screen Recording not granted")
+            // The claim has to be withdrawn, not merely contradicted later:
+            // leaving it in and appending a denial still produced a confident
+            // wrong answer against the live API.
+            Check.ok(!blind.contains("see Omari's screen in real time"),
+                     "blind persona withdraws the claim of sight")
+            Check.ok(blind.lowercased().contains("currently blind"), "blind says so")
+            Check.ok(blind.contains("Screen Recording not granted"), "carries the real reason")
+            Check.ok(blind.contains("Screen Recording"), "points at the setting to fix it")
+
+            for text in [sighted, blind] {
+                Check.ok(text.contains("Kweku") && text.contains("Omari")
+                         && text.contains("OpenClaw"), "persona survives either way")
+            }
+        }
+    }
+
     static func mediaFrames() {
-        Check.run("audio + video chunks use the right mime types") {
+        Check.run("audio + video ride their own realtimeInput streams") {
+            // Each modality has its own field. The deprecated `mediaChunks`
+            // array holds one blob only, so sharing it between mic and screen
+            // silently dropped every frame — assert the split, not just mimes.
             let audio = json(GeminiLiveProtocol.audioChunk(Data([1, 2, 3])))
-            let aChunk = (((audio["realtimeInput"] as? [String: Any])?["mediaChunks"]
-                as? [[String: Any]]))?.first
-            Check.ok(aChunk?["mimeType"] as? String == "audio/pcm;rate=16000", "pcm 16k mime")
-            Check.ok(aChunk?["data"] as? String == Data([1, 2, 3]).base64EncodedString(), "b64 payload")
+            let aInput = audio["realtimeInput"] as? [String: Any]
+            let aBlob = aInput?["audio"] as? [String: Any]
+            Check.ok(aBlob?["mimeType"] as? String == "audio/pcm;rate=16000", "pcm 16k mime")
+            Check.ok(aBlob?["data"] as? String == Data([1, 2, 3]).base64EncodedString(), "b64 payload")
+            Check.ok(aInput?["mediaChunks"] == nil, "audio avoids deprecated mediaChunks")
+            Check.ok(aInput?["video"] == nil, "audio frame carries no video")
 
             let video = json(GeminiLiveProtocol.videoFrame(Data([9])))
-            let vChunk = (((video["realtimeInput"] as? [String: Any])?["mediaChunks"]
-                as? [[String: Any]]))?.first
-            Check.ok(vChunk?["mimeType"] as? String == "image/jpeg", "jpeg mime")
+            let vInput = video["realtimeInput"] as? [String: Any]
+            let vBlob = vInput?["video"] as? [String: Any]
+            Check.ok(vBlob?["mimeType"] as? String == "image/jpeg", "jpeg mime")
+            Check.ok(vBlob?["data"] as? String == Data([9]).base64EncodedString(), "b64 payload")
+            Check.ok(vInput?["mediaChunks"] == nil, "video avoids deprecated mediaChunks")
+            Check.ok(vInput?["audio"] == nil, "video frame carries no audio")
         }
 
         Check.run("tool response frame shape") {
@@ -193,6 +227,36 @@ enum GeminiLiveTests {
             Check.ok(ScreenTargeting.focusedWindowID(windows: [win(9, 5, regular: false)],
                                                      excludingPid: 1) == nil,
                      "nothing qualifies -> nil (display fallback)")
+        }
+        Check.run("still screens keep sending; pixels never outlive their window") {
+            typealias T = ScreenTargeting
+            // A window that is repainting: normal path.
+            Check.ok(T.frameAction(hasNewPixels: true, cacheMatchesTarget: true,
+                                   sendASAP: false, sinceLastSend: 1.0) == .send,
+                     "new pixels on cadence are sent")
+            Check.ok(T.frameAction(hasNewPixels: true, cacheMatchesTarget: true,
+                                   sendASAP: false, sinceLastSend: 0.2) == .skip,
+                     "cadence still throttles a busy window")
+            Check.ok(T.frameAction(hasNewPixels: true, cacheMatchesTarget: false,
+                                   sendASAP: true, sinceLastSend: 0) == .send,
+                     "the user's turn jumps the cadence")
+
+            // A window sitting still: SCStream stops producing pixels, and the
+            // old code sent nothing at all — so the model stayed on whatever
+            // was last moving. It must now keep seeing the current window.
+            Check.ok(T.frameAction(hasNewPixels: false, cacheMatchesTarget: true,
+                                   sendASAP: false, sinceLastSend: 1.0) == .resendCached,
+                     "idle window re-sends its own last frame")
+            Check.ok(T.frameAction(hasNewPixels: false, cacheMatchesTarget: true,
+                                   sendASAP: true, sinceLastSend: 0) == .resendCached,
+                     "asking about a frozen screen still shows that screen")
+
+            // Just retargeted and the new window hasn't painted yet: staying
+            // silent is right, because the only frame in hand is the *old*
+            // window's — sending it is exactly the wrong-screen bug.
+            Check.ok(T.frameAction(hasNewPixels: false, cacheMatchesTarget: false,
+                                   sendASAP: true, sinceLastSend: 9) == .skip,
+                     "never re-sends a frame from the previous target")
         }
         Check.run("output size: native when small, capped with aspect when big") {
             let small = ScreenTargeting.outputSize(for: CGSize(width: 400, height: 300))

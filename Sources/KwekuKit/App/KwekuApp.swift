@@ -25,7 +25,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         // Diagnostic rig: run the vision capture pipeline alone — no Gemini,
         // no mic — dumping frames via KWEKU_LIVE_DEBUG so focus-following can
         // be verified against real window switches from outside the app.
-        if ProcessInfo.processInfo.environment["KWEKU_CAPTURE_PROBE"] != nil {
+        // Also switchable via `defaults write com.kweku.app captureProbe -bool YES`,
+        // because passing env vars means launching by hand, and a hand-launched
+        // app is exactly the variable you're trying to hold still when the
+        // question is "does this app have its TCC grant?".
+        if ProcessInfo.processInfo.environment["KWEKU_CAPTURE_PROBE"] != nil
+            || UserDefaults.standard.bool(forKey: "captureProbe") {
             let probe = ScreenCaptureManager()
             probe.onIssue = { ScreenCaptureManager.dbg("probe issue: \($0)") }
             probe.startStreaming { _ in }

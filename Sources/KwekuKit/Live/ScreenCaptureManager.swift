@@ -55,6 +55,37 @@ public enum ScreenTargeting {
         return qualified.first?.id
     }
 
+    /// What to do with one buffer the compositor just handed us.
+    public enum FrameAction: Equatable {
+        case send           // carries new pixels: encode, cache, transmit
+        case resendCached   // nothing moved, but the model is owed a frame
+        case skip
+    }
+
+    /// ScreenCaptureKit only generates pixels when the content *changes* —
+    /// `SCFrameStatusIdle` is documented as "new frame was not generated
+    /// because the display did not change". A still window therefore starves
+    /// the vision channel completely, and the model goes on answering from the
+    /// last window that happened to be moving. That is the whole "you're on
+    /// oh-my-pi" bug: an agent terminal repaints constantly and so keeps
+    /// feeding frames, while a paused Spotify window feeds none, so the model
+    /// never stops looking at the terminal.
+    ///
+    /// So a still screen re-sends its last good frame on the normal cadence.
+    /// The cache may only be re-sent while it still belongs to the window the
+    /// stream is aimed at *now* (`cacheMatchesTarget`) — re-sending across a
+    /// retarget would restage the previous window's pixels as the current
+    /// screen, which is the same lie in the other direction.
+    public static func frameAction(hasNewPixels: Bool,
+                                   cacheMatchesTarget: Bool,
+                                   sendASAP: Bool,
+                                   sinceLastSend: TimeInterval,
+                                   interval: TimeInterval = 0.95) -> FrameAction {
+        guard sendASAP || sinceLastSend >= interval else { return .skip }
+        if hasNewPixels { return .send }
+        return cacheMatchesTarget ? .resendCached : .skip
+    }
+
     /// Output size for a window: at native pixels when small, capped at
     /// `maxLong` on the long edge, aspect preserved, even dimensions (the
     /// encoder dislikes odd ones). Legibility beats bandwidth here — a capped
@@ -98,15 +129,29 @@ final class ScreenCaptureManager: NSObject, SCStreamDelegate, SCStreamOutput {
     private var targetDisplayID: CGDirectDisplayID = 0
     private var activationObserver: NSObjectProtocol?
     private var pollTimer: Timer?
+    private var heartbeat: DispatchSourceTimer?
+
+    /// A session is open and wants frames. Distinct from `stream != nil`: the
+    /// first aim can fail (a transient `SCShareableContent` error), and gating
+    /// the poll on the stream instead would strand the session with no vision
+    /// for its whole life and only a one-line status to say so.
+    private var streaming = false
 
     /// Surfaced problems (missing permission, stream death) for the UI/status.
     var onIssue: ((String) -> Void)?
 
     /// Most recent frame sent upstream, kept so a dispatched OpenClaw task can
-    /// carry the actual screen rather than a description of it. Written on
-    /// `queue`, read from main.
+    /// carry the actual screen rather than a description of it, and so a still
+    /// screen still has something to send. Written on `queue` and from the
+    /// seed grab, read from main.
+    ///
+    /// `generation` is a monotonic id for the current aim, bumped on every
+    /// retarget. A cached frame carries the generation it was captured under,
+    /// so pixels can never outlive the window they came from.
     private let frameLock = NSLock()
     private var lastFrame: Data?
+    private var lastFrameGeneration: UInt64 = 0
+    private var generation: UInt64 = 0
 
     /// The current screen as JPEG, at most ~1s old. Nil before the first frame
     /// or when screen capture isn't permitted.
@@ -116,19 +161,64 @@ final class ScreenCaptureManager: NSObject, SCStreamDelegate, SCStreamOutput {
         return lastFrame
     }
 
+    private var currentGeneration: UInt64 {
+        frameLock.lock(); defer { frameLock.unlock() }
+        return generation
+    }
+
+    /// Open a new aim. The cache is *not* cleared — it stays readable for an
+    /// OpenClaw dispatch — but its generation no longer matches, so no idle
+    /// frame can re-send it as if it were the new window.
+    private func beginTarget() -> UInt64 {
+        frameLock.lock(); defer { frameLock.unlock() }
+        generation &+= 1
+        return generation
+    }
+
+    private func cache(_ jpeg: Data, generation gen: UInt64) {
+        frameLock.lock()
+        lastFrame = jpeg
+        lastFrameGeneration = gen
+        frameLock.unlock()
+    }
+
+    private func cachedFrame(for gen: UInt64) -> Data? {
+        frameLock.lock(); defer { frameLock.unlock() }
+        return lastFrameGeneration == gen ? lastFrame : nil
+    }
+
 
     // MARK: - Lifecycle
+
+    /// Whether this process may capture the screen *right now*, asked without
+    /// prompting. Checked before the Live socket opens, because whether Kweku
+    /// can see decides what its system instruction is allowed to claim.
+    static var hasScreenAccess: Bool { CGPreflightScreenCaptureAccess() }
+
+    /// `SCStreamErrorUserDeclined`. The enum isn't surfaced to Swift, so the
+    /// raw value from `SCError.h` stands in for it.
+    static let userDeclined = -3801
+
+    /// Why vision is off, in the words the model and the UI both get.
+    static let permissionIssue =
+        "Screen Recording not granted — enable Kweku in System Settings › Privacy › "
+        + "Screen Recording, then relaunch. Session continues audio-only."
 
     func startStreaming(onFrame: @escaping (Data) -> Void) {
         self.onFrame = onFrame
 
-        // Explicit, surfaced permission check instead of silent no-frames.
-        guard CGPreflightScreenCaptureAccess() else {
-            CGRequestScreenCaptureAccess()
-            onIssue?("Screen Recording not granted — enable Kweku in System Settings › Privacy › Screen Recording, then relaunch. Session continues audio-only.")
-            return
-        }
-
+        // Deliberately *not* gated on `CGPreflightScreenCaptureAccess()`.
+        // That call answers for the legacy CoreGraphics capture path, and on
+        // this machine it returns false for apps that hold a live "Screen &
+        // System Audio Recording" grant — Kweku included, with its toggle
+        // plainly on. Refusing to start on that answer is a self-inflicted
+        // blindness that looks exactly like a revoked permission.
+        //
+        // ScreenCaptureKit is the thing we actually use, so let it answer:
+        // `SCShareableContent` fails with a permission error when the grant
+        // really is missing, and that error is what surfaces to the user.
+        Self.dbg("preflight(legacy CG)=\(Self.hasScreenAccess) — advisory only")
+        streaming = true
         retarget(force: true)
 
         // Focus moves two ways: another app activates (notification), or the
@@ -139,9 +229,40 @@ final class ScreenCaptureManager: NSObject, SCStreamDelegate, SCStreamOutput {
         let timer = Timer(timeInterval: 2, repeats: true) { [weak self] _ in self?.retarget() }
         RunLoop.main.add(timer, forMode: .common)
         pollTimer = timer
+        startHeartbeat()
+    }
+
+    /// Guarantees the model a frame every second, whatever the compositor does.
+    ///
+    /// A still window may deliver `.idle` buffers, or it may deliver nothing at
+    /// all — the two are indistinguishable from outside, and only one of them
+    /// gives the sample-buffer path a chance to react. Hanging the fix on that
+    /// distinction is how the channel went quiet in the first place, so the
+    /// cadence is driven from here instead and the buffer path is just the
+    /// cheap route when frames happen to be arriving.
+    private func startHeartbeat() {
+        let beat = DispatchSource.makeTimerSource(queue: queue)
+        beat.schedule(deadline: .now() + 1, repeating: 1, leeway: .milliseconds(100))
+        beat.setEventHandler { [weak self] in
+            guard let self else { return }
+            let now = Date()
+            guard now.timeIntervalSince(self.lastSentAt) >= 0.95,
+                  let jpeg = self.cachedFrame(for: self.currentGeneration)
+            else { return }
+            self.lastSentAt = now
+            self.sendASAP = false
+            self.framesSent += 1
+            if Self.debug {
+                Self.dbg("frame#\(self.framesSent) resend(heartbeat) jpeg=\(jpeg.count)B")
+            }
+            self.onFrame?(jpeg)
+        }
+        beat.resume()
+        heartbeat = beat
     }
 
     func stop() {
+        streaming = false
         stream?.stopCapture { _ in }
         stream = nil
         onFrame = nil
@@ -151,6 +272,8 @@ final class ScreenCaptureManager: NSObject, SCStreamDelegate, SCStreamOutput {
         activationObserver = nil
         pollTimer?.invalidate()
         pollTimer = nil
+        heartbeat?.cancel()
+        heartbeat = nil
         targetWindowID = 0
         targetDisplayID = 0
     }
@@ -167,6 +290,7 @@ final class ScreenCaptureManager: NSObject, SCStreamDelegate, SCStreamOutput {
     // MARK: - Debug (env-gated; same switch as the frame log)
 
     static let debug = ProcessInfo.processInfo.environment["KWEKU_LIVE_DEBUG"] != nil
+        || UserDefaults.standard.bool(forKey: "liveDebug")
 
     static func dbg(_ s: String) {
         guard debug else { return }
@@ -180,7 +304,7 @@ final class ScreenCaptureManager: NSObject, SCStreamDelegate, SCStreamOutput {
     /// Aim the stream at the frontmost window; fall back to the display with
     /// keyboard focus. No-op when the target hasn't changed.
     private func retarget(force: Bool = false) {
-        guard force || stream != nil else { return }
+        guard force || streaming else { return }
 
         // Front-to-back z-order comes from the window server; SCShareableContent
         // makes no ordering promise, so the choice is made here and matched there.
@@ -228,7 +352,20 @@ final class ScreenCaptureManager: NSObject, SCStreamDelegate, SCStreamOutput {
             DispatchQueue.main.async {
                 guard let self else { return }
                 if let error {
-                    if force { self.onIssue?("Screen capture unavailable: \(error.localizedDescription)") }
+                    // ScreenCaptureKit is the authority on its own permission:
+                    // a declined grant comes back as `SCStreamErrorUserDeclined`
+                    // here, and only then is it worth sending the user to
+                    // System Settings (or raising the system prompt).
+                    let ns = error as NSError
+                    let declined = ns.code == Self.userDeclined
+                    Self.dbg("shareable content error domain=\(ns.domain) code=\(ns.code) "
+                             + "declined=\(declined)")
+                    if declined {
+                        CGRequestScreenCaptureAccess()
+                        self.onIssue?(Self.permissionIssue)
+                    } else if force {
+                        self.onIssue?("Screen capture unavailable: \(error.localizedDescription)")
+                    }
                     return
                 }
                 guard let content else { return }
@@ -271,6 +408,11 @@ final class ScreenCaptureManager: NSObject, SCStreamDelegate, SCStreamOutput {
         config.queueDepth = 3
         config.showsCursor = true
 
+        // New aim: cached pixels from the old window stop counting as "now",
+        // and the next real frame goes out without waiting for the cadence.
+        let gen = beginTarget()
+        queue.async { self.sendASAP = true }
+
         if let stream {
             stream.updateContentFilter(filter) { [weak self] err in
                 Self.dbg("updateContentFilter -> \(err.map { "\($0)" } ?? "ok")")
@@ -279,6 +421,7 @@ final class ScreenCaptureManager: NSObject, SCStreamDelegate, SCStreamOutput {
             stream.updateConfiguration(config) { err in
                 Self.dbg("updateConfiguration -> \(err.map { "\($0)" } ?? "ok")")
             }
+            seedFrame(filter: filter, config: config, generation: gen)
             return
         }
 
@@ -289,34 +432,84 @@ final class ScreenCaptureManager: NSObject, SCStreamDelegate, SCStreamOutput {
                 if let err { self?.onIssue?("Screen capture failed: \(err.localizedDescription)") }
             }
             self.stream = stream
+            seedFrame(filter: filter, config: config, generation: gen)
         } catch {
             onIssue?("Screen capture failed: \(error.localizedDescription)")
+        }
+    }
+
+    /// One guaranteed grab of a freshly aimed target.
+    ///
+    /// The stream itself only emits pixels on change, so switching to a window
+    /// that is sitting still can deliver nothing at all — leaving the model on
+    /// the window it was watching before. `SCScreenshotManager` renders on
+    /// demand, so the switch is visible to the model immediately rather than
+    /// whenever the new window next happens to repaint.
+    private func seedFrame(filter: SCContentFilter, config: SCStreamConfiguration,
+                           generation gen: UInt64) {
+        guard #available(macOS 14.0, *) else { return }
+        SCScreenshotManager.captureSampleBuffer(contentFilter: filter, configuration: config) {
+            [weak self] buffer, error in
+            guard let self, error == nil, let buffer, buffer.isValid,
+                  let pixels = CMSampleBufferGetImageBuffer(buffer),
+                  let jpeg = Self.jpegData(from: pixels, context: self.ciContext)
+            else { return }
+            self.queue.async {
+                // A newer aim may have landed while this grab was in flight.
+                guard self.currentGeneration == gen else { return }
+                self.cache(jpeg, generation: gen)
+                self.sendASAP = false
+                self.lastSentAt = Date()
+                Self.dbg("seed gen=\(gen) jpeg=\(jpeg.count)B")
+                self.onFrame?(jpeg)
+            }
         }
     }
 
     // MARK: - SCStreamOutput (on `queue`)
 
     func stream(_ stream: SCStream, didOutputSampleBuffer sampleBuffer: CMSampleBuffer, of type: SCStreamOutputType) {
-        guard type == .screen,
-              sampleBuffer.isValid,
-              let pixelBuffer = CMSampleBufferGetImageBuffer(sampleBuffer)
-        else { return }
+        guard type == .screen, sampleBuffer.isValid else { return }
+
+        // Buffers keep arriving while the screen sits still, but only a
+        // `.complete`/`.started` one carries pixels; the rest say "nothing
+        // changed". Treat an unreadable status as fresh and let the image
+        // buffer decide, so an OS change can't silently mute the channel.
+        let status = Self.frameStatus(of: sampleBuffer)
+        let maybeFresh = status == nil || status == .complete || status == .started
+        let pixelBuffer = maybeFresh ? CMSampleBufferGetImageBuffer(sampleBuffer) : nil
 
         let now = Date()
-        guard sendASAP || now.timeIntervalSince(lastSentAt) >= 0.95 else { return }
+        let gen = currentGeneration
+        let action = ScreenTargeting.frameAction(
+            hasNewPixels: pixelBuffer != nil,
+            cacheMatchesTarget: cachedFrame(for: gen) != nil,
+            sendASAP: sendASAP,
+            sinceLastSend: now.timeIntervalSince(lastSentAt))
+
+        let jpeg: Data?
+        switch action {
+        case .skip:
+            return
+        case .send:
+            jpeg = pixelBuffer.flatMap { Self.jpegData(from: $0, context: ciContext) }
+            if let jpeg { cache(jpeg, generation: gen) }
+        case .resendCached:
+            jpeg = cachedFrame(for: gen)
+        }
+        guard let jpeg else { return }
+
         sendASAP = false
         lastSentAt = now
-
-        guard let jpeg = Self.jpegData(from: pixelBuffer, context: ciContext) else { return }
-        frameLock.lock()
-        lastFrame = jpeg
-        frameLock.unlock()
         framesSent += 1
         if Self.debug {
             try? jpeg.write(to: URL(fileURLWithPath: "/tmp/kweku_frame.jpg"))
-            if framesSent % 10 == 1 {
-                Self.dbg("frame#\(framesSent) jpeg=\(jpeg.count)B")
-            }
+            // Log every frame with its provenance: a run of `resend` is the
+            // vision channel staying alive on a motionless screen, which is
+            // precisely what used to fail silently.
+            Self.dbg("frame#\(framesSent) \(action == .send ? "fresh" : "resend") "
+                     + "gen=\(gen) status=\(status.map { "\($0.rawValue)" } ?? "?") "
+                     + "jpeg=\(jpeg.count)B")
         }
         onFrame?(jpeg)
     }
@@ -324,6 +517,16 @@ final class ScreenCaptureManager: NSObject, SCStreamDelegate, SCStreamOutput {
     func stream(_ stream: SCStream, didStopWithError error: Error) {
         self.stream = nil
         onIssue?("Screen stream stopped: \(error.localizedDescription)")
+    }
+
+    /// The compositor's verdict on this buffer, from the sample attachments.
+    /// Nil when the attachment is missing or unrecognised.
+    static func frameStatus(of sampleBuffer: CMSampleBuffer) -> SCFrameStatus? {
+        guard let attachments = CMSampleBufferGetSampleAttachmentsArray(
+                sampleBuffer, createIfNecessary: false) as? [[SCStreamFrameInfo: Any]],
+              let raw = attachments.first?[.status] as? Int
+        else { return nil }
+        return SCFrameStatus(rawValue: raw)
     }
 
     static func jpegData(from pixelBuffer: CVPixelBuffer, context: CIContext, quality: CGFloat = 0.6) -> Data? {

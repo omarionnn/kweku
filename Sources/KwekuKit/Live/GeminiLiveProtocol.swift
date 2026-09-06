@@ -25,14 +25,66 @@ public enum GeminiLiveProtocol {
     public static let endpointBase =
         "wss://generativelanguage.googleapis.com/ws/google.ai.generativelanguage.v1beta.GenerativeService.BidiGenerateContent"
 
-    public static let systemInstruction = """
+    private static let persona = """
         You are Kweku, an elite personal developer companion living inside \
         Omari's MacBook notch. You are sharp, developer-native, concise, and \
-        highly action-oriented. You can see Omari's screen in real time, \
-        listen and talk verbally, execute terminal tasks in oh-my-pi, and run \
-        complex browser/OS automations through your OpenClaw runtime engine. \
-        Address Omari naturally as his companion.
+        highly action-oriented. You listen and talk verbally, execute terminal \
+        tasks in oh-my-pi, and run complex browser/OS automations through your \
+        OpenClaw runtime engine. Address Omari naturally as his companion.
         """
+
+    /// The persona, told the truth about whether it can currently see.
+    ///
+    /// A blind session cannot be patched up mid-conversation. Told "you can
+    /// see Omari's screen in real time" and then handed no frames, the model
+    /// reaches for the most screen-shaped things in its context — oh-my-pi, a
+    /// terminal, an editor — and narrates one with total confidence. Measured
+    /// against the live API: a later "your vision is unavailable" notice does
+    /// *not* stop it, and neither does a standing "never guess" rule. Only
+    /// withdrawing the claim of sight does.
+    ///
+    /// So sight is decided before the socket opens and stated once, plainly.
+    public static func systemInstruction(visionAvailable: Bool = true,
+                                         visionIssue: String? = nil) -> String {
+        guard visionAvailable else {
+            let reason = visionIssue ?? "Screen Recording permission is not granted to Kweku"
+            return persona + """
+
+
+                IMPORTANT — you are currently blind. Your screen vision is off \
+                for this session (\(reason)), so you are receiving no screen \
+                frames at all and have no idea what is on his display. Do not \
+                describe, name, or guess any app, window, file, or content on \
+                his screen. If he asks what he is looking at, tell him you \
+                cannot see his screen right now, give that reason, and point \
+                him at System Settings › Privacy & Security › Screen Recording \
+                to enable Kweku and restart you. Never invent a screen.
+                """
+        }
+        return persona + """
+
+
+            You can also see Omari's screen in real time. Describe only what is \
+            actually in a screen frame you have received — never infer his \
+            screen from this prompt, from the tools you have, or from earlier \
+            conversation. If you have not received a frame, say so rather than \
+            guessing; naming the wrong app is worse than admitting you missed it.
+            """
+    }
+
+    /// Default sighted persona, for callers that don't decide sight themselves.
+    public static var systemInstruction: String { systemInstruction() }
+
+    /// Best-effort notice when vision dies *mid*-session, where the system
+    /// instruction is already fixed. Weaker than starting blind — proven not
+    /// to fully suppress confabulation on its own — so it backs up the status
+    /// line rather than being the guarantee.
+    public static func visionUnavailableNote(_ reason: String) -> String {
+        "System notice, not from Omari: your live screen vision just became "
+            + "unavailable (\(reason)). You are no longer receiving screen frames. "
+            + "Do not describe or guess what is on his screen. If he asks what he "
+            + "is looking at, tell him you cannot see it right now and give this reason."
+    }
 
     // MARK: - Client → server frames
 
@@ -98,17 +150,29 @@ public enum GeminiLiveProtocol {
         return encode(frame)
     }
 
-    /// One realtime media chunk (mic audio or a screen frame).
-    public static func realtimeChunk(mimeType: String, base64: String) -> Data {
-        encode(["realtimeInput": ["mediaChunks": [["mimeType": mimeType, "data": base64]]]])
+    /// One realtime media blob, on the stream that matches its modality.
+    ///
+    /// `realtimeInput` carries audio, video and text as *concurrent* streams,
+    /// each with its own field. The older `mediaChunks` array is a single
+    /// inlined-media slot — "multiple mediaChunks are not supported, all but
+    /// the first will be ignored" — and is deprecated in favour of these.
+    ///
+    /// Sending both modalities through `mediaChunks` is why "what am I looking
+    /// at?" answered from the system prompt instead of the screen: mic PCM
+    /// arrives ~50×/second and screen frames 1×/second, so audio owned the
+    /// one slot and the frames were dropped before the model ever saw them.
+    /// Capture was never the problem — delivery was.
+    public static func realtimeBlob(_ stream: String, mimeType: String, base64: String) -> Data {
+        encode(["realtimeInput": [stream: ["mimeType": mimeType, "data": base64]]])
     }
 
     public static func audioChunk(_ pcm16k: Data) -> Data {
-        realtimeChunk(mimeType: "audio/pcm;rate=16000", base64: pcm16k.base64EncodedString())
+        realtimeBlob("audio", mimeType: "audio/pcm;rate=16000",
+                     base64: pcm16k.base64EncodedString())
     }
 
     public static func videoFrame(_ jpeg: Data) -> Data {
-        realtimeChunk(mimeType: "image/jpeg", base64: jpeg.base64EncodedString())
+        realtimeBlob("video", mimeType: "image/jpeg", base64: jpeg.base64EncodedString())
     }
 
     /// Inject a text turn into the live conversation. Used to deliver an

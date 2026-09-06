@@ -50,6 +50,18 @@ public final class LiveSessionController: ObservableObject {
     private var resumeHandle: String?
     private var reconnectAttempts = 0
 
+    /// A vision failure that landed before the socket was live. The permission
+    /// check runs during `start()`, well ahead of `setupComplete`, so the note
+    /// waits here rather than being dropped by the not-yet-live send guard —
+    /// the one session where it matters most is the one that never saw a frame.
+    private var pendingVisionNote: String?
+
+    /// Whether this socket was opened believing it could see. A session that
+    /// started blind already says so in its system instruction, and must not
+    /// also be handed a notice — `clientText` completes a turn, so it would
+    /// make Kweku announce the bad news unprompted the moment it connects.
+    private var connectedWithVision = false
+
     /// Supplied by the content root: cwd of the most relevant agent session.
     public var ompCwdProvider: () -> String? = { nil }
     /// Feed voice-dispatched work into the agent table (ember/bang states).
@@ -111,7 +123,15 @@ public final class LiveSessionController: ObservableObject {
         }
         screen.onIssue = { [weak self] issue in
             DispatchQueue.main.async {
-                MainActor.assumeIsolated { self?.status = issue }
+                MainActor.assumeIsolated {
+                    guard let self else { return }
+                    self.status = issue
+                    // A status line is easy to miss, and a blind Kweku that
+                    // doesn't know it's blind narrates the screen from its
+                    // prompt instead. Tell the model directly so the failure
+                    // is spoken aloud rather than papered over.
+                    self.noteVisionUnavailable(issue)
+                }
             }
         }
         screen.startStreaming { [weak self] jpeg in self?.client.sendVideoFrame(jpeg) }
@@ -123,6 +143,7 @@ public final class LiveSessionController: ObservableObject {
 
     public func stop() {
         guard running else { return }
+        pendingVisionNote = nil
         screen.stop()
         audio.stop()
         client.disconnect()
@@ -159,7 +180,15 @@ public final class LiveSessionController: ObservableObject {
     /// resumption handle so the server restores the same session.
     private func connectSocket(fresh: Bool) {
         guard let key = Self.apiKey else { return }
-        let system = GeminiLiveProtocol.systemInstruction + (memory.recap() ?? "")
+        // Decided here, before the socket opens: a session that cannot see
+        // must not be told that it can, or it will invent a screen rather than
+        // admit the permission is missing.
+        let canSee = ScreenCaptureManager.hasScreenAccess
+        connectedWithVision = canSee
+        let system = GeminiLiveProtocol.systemInstruction(
+            visionAvailable: canSee,
+            visionIssue: canSee ? nil : ScreenCaptureManager.permissionIssue)
+            + (memory.recap() ?? "")
         client.connect(apiKey: key, model: Self.model,
                        system: system,
                        resumeHandle: fresh ? nil : resumeHandle)
@@ -188,6 +217,9 @@ public final class LiveSessionController: ObservableObject {
         case .setupComplete:
             status = "live"
             reconnectAttempts = 0
+            // Also replayed after a resume: the new socket knows nothing about
+            // a capture failure raised on the old one.
+            if let note = pendingVisionNote { client.sendClientText(note) }
         case .resumptionHandle(let handle):
             resumeHandle = handle
         case .audio(let pcm):
@@ -254,6 +286,16 @@ public final class LiveSessionController: ObservableObject {
             // tool-call-only turn, or audio that never started).
             if !audio.isSpeaking { clearTranscripts() }
         }
+    }
+
+    /// Record a mid-session vision failure and tell the model, now or at
+    /// `setupComplete`. A session that opened blind is already covered by its
+    /// system instruction, which is the only thing that reliably holds.
+    private func noteVisionUnavailable(_ reason: String) {
+        guard connectedWithVision else { return }
+        let note = GeminiLiveProtocol.visionUnavailableNote(reason)
+        pendingVisionNote = note
+        client.sendClientText(note)   // no-op until the socket is live
     }
 
     /// Wipe both transcript strings. Called when playback genuinely drains,

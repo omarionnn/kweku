@@ -28,7 +28,9 @@ struct NowPlayingView: View {
     static let wing: CGFloat = 48
     /// Extra lip below the menu-bar band so the pill reads as one shape.
     static let lip: CGFloat = 4
-    static let expandedBody: CGFloat = 96
+    /// Room for three rows: track + transport, scrubber, then the shuffle /
+    /// repeat / volume line.
+    static let expandedBody: CGFloat = 122
     static let expandedWidth: CGFloat = 360
 
     @Namespace private var art
@@ -121,7 +123,7 @@ struct NowPlayingView: View {
     // MARK: Expanded
 
     private var expandedCard: some View {
-        VStack(spacing: 9) {
+        VStack(spacing: 7) {
             HStack(spacing: 12) {
                 artwork(side: 44)
                 VStack(alignment: .leading, spacing: 2) {
@@ -139,8 +141,58 @@ struct NowPlayingView: View {
                 transport
             }
             scrubber
+            settingsRow
         }
         .padding(.horizontal, 20).padding(.vertical, 11)
+    }
+
+    /// Shuffle and repeat on the left, volume on the right.
+    ///
+    /// Deliberately *not* folded into the transport: five buttons in a row all
+    /// look equally important, and skipping a track is not the same kind of act
+    /// as changing a mode you'll live with for the next hour.
+    private var settingsRow: some View {
+        HStack(spacing: 8) {
+            modeToggle("shuffle", on: music.now.shuffling) { music.toggleShuffle() }
+            modeToggle("repeat", on: music.now.repeating) { music.toggleRepeat() }
+            Spacer(minLength: 10)
+            Image(systemName: volumeSymbol)
+                .font(.system(size: 9, weight: .semibold))
+                .foregroundStyle(.white.opacity(0.5))
+                // Fixed width so the slider doesn't shift as the glyph changes
+                // between silent / low / high.
+                .frame(width: 13, alignment: .leading)
+            VolumeSlider(volume: music.now.volume, accent: accent) { music.setVolume($0) }
+                .frame(width: 104, height: 14)
+        }
+    }
+
+    /// A latch, not a button: lit in the album accent while on, so the state is
+    /// legible at a glance rather than needing a press to discover.
+    private func modeToggle(_ symbol: String, on: Bool,
+                            action: @escaping () -> Void) -> some View {
+        Button(action: action) {
+            Image(systemName: symbol)
+                .font(.system(size: 10, weight: .semibold))
+                .foregroundStyle(on ? accent : Color.white.opacity(0.45))
+                .frame(width: 20, height: 16)
+                .background(
+                    RoundedRectangle(cornerRadius: 4, style: .continuous)
+                        .fill(accent.opacity(on ? 0.16 : 0))
+                )
+                .contentShape(Rectangle())
+        }
+        .buttonStyle(TransportButtonStyle())
+        .animation(.easeOut(duration: 0.15), value: on)
+    }
+
+    private var volumeSymbol: String {
+        switch music.now.volume {
+        case ..<1:   return "speaker.slash.fill"
+        case ..<34:  return "speaker.wave.1.fill"
+        case ..<67:  return "speaker.wave.2.fill"
+        default:     return "speaker.wave.3.fill"
+        }
     }
 
     private var transport: some View {
@@ -248,6 +300,60 @@ struct NowPlayingView: View {
         .transition(.opacity.combined(with: .scale(scale: 1.08)))
         .animation(.easeInOut(duration: 0.28), value: music.now.trackID)
         .matchedGeometryEffect(id: "album-art", in: art)
+    }
+}
+
+/// Spotify's output level as a drag-and-click bar.
+///
+/// Holds its own drag state so the fill tracks the cursor at frame rate while
+/// `MusicHub` only hears about whole percent changes — an AppleScript call per
+/// pixel of travel would fall behind the finger and cost more CPU than the rest
+/// of the island put together.
+private struct VolumeSlider: View {
+    var volume: Int
+    var accent: Color
+    var onChange: (Int) -> Void
+
+    @State private var dragging: Double?
+    @State private var hovering = false
+
+    private var fraction: Double { dragging ?? Double(volume) / 100 }
+
+    var body: some View {
+        GeometryReader { geo in
+            let w = max(1, geo.size.width)
+            let active = dragging != nil || hovering
+            ZStack(alignment: .leading) {
+                Capsule().fill(Color.white.opacity(0.18))
+                    .frame(height: active ? 5 : 3)
+                Capsule().fill(accent.opacity(0.9))
+                    .frame(width: w * fraction, height: active ? 5 : 3)
+                Circle()
+                    .fill(accent)
+                    .frame(width: 8, height: 8)
+                    .offset(x: w * fraction - 4)
+                    .opacity(active ? 1 : 0)
+                    .shadow(color: .black.opacity(0.4), radius: 2)
+            }
+            .frame(height: geo.size.height, alignment: .center)
+            // A 3pt line is a mean click target; take the whole strip.
+            .contentShape(Rectangle())
+            .onHover { hovering = $0 }
+            .gesture(
+                DragGesture(minimumDistance: 0)
+                    .onChanged { value in
+                        let next = min(1, max(0, value.location.x / w))
+                        dragging = next
+                        onChange(Int((next * 100).rounded()))
+                    }
+                    .onEnded { value in
+                        let next = min(1, max(0, value.location.x / w))
+                        onChange(Int((next * 100).rounded()))
+                        dragging = nil
+                    }
+            )
+            .animation(.easeOut(duration: 0.15), value: active)
+        }
     }
 }
 

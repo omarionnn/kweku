@@ -4,7 +4,7 @@ import SwiftUI
 /// Collapsed: mini scene + temp in the band below the cutout. Hover-expanded:
 /// a larger animated scene (rain/snow/lightning move; sun/moon are calm) with
 /// temperature and place. All drawing is `Canvas` — no image assets.
-struct WeatherView: View {
+struct WeatherView: View, NookComponent {
     @ObservedObject var weather: WeatherHub
     @ObservedObject var vm: NotchViewModel
     var rim: NotchRimStyle
@@ -12,6 +12,10 @@ struct WeatherView: View {
     static let peek: CGFloat = 30
     static let expandedBody: CGFloat = 96
     static let expandedWidth: CGFloat = 300
+
+    static func metrics(_ context: NookContext) -> NookMetrics {
+        NookMetrics(peek: peek, expandedBody: expandedBody, expandedWidth: expandedWidth)
+    }
 
     private var expanded: Bool { vm.isHovering || vm.expanded }
 

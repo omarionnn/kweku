@@ -4,7 +4,9 @@ import SwiftUI
 public enum AgentPanelFormat {
     /// Rows shown before the list collapses into a "+N more" line.
     public static let maxRows = 4
-    public static let rowHeight: CGFloat = 30
+    /// Two lines of text plus room for the hover action cluster to sit beside
+    /// them without crowding either.
+    public static let rowHeight: CGFloat = 32
 
     /// Height the panel needs for `count` sessions, including padding.
     public static func bodyHeight(for count: Int) -> CGFloat {
@@ -39,7 +41,7 @@ public enum AgentPanelFormat {
 /// Collapsed it's a one-line summary in the band below the cutout; hovering
 /// expands it into the full list. Same shape-owns-its-own-background pattern as
 /// `WeatherView`.
-struct AgentModeView: View {
+struct AgentModeView: View, NookComponent {
     @ObservedObject var agents: AgentWatchHub
     @ObservedObject var vm: NotchViewModel
     var rim: NotchRimStyle
@@ -49,6 +51,13 @@ struct AgentModeView: View {
 
     static func expandedBody(for count: Int) -> CGFloat {
         max(AgentPanelFormat.bodyHeight(for: count), 44)
+    }
+
+    /// The one component whose height is data-dependent: a row per session.
+    static func metrics(_ context: NookContext) -> NookMetrics {
+        NookMetrics(peek: peek,
+                    expandedBody: expandedBody(for: context.agentCount),
+                    expandedWidth: expandedWidth)
     }
 
     private var expanded: Bool { vm.isHovering || vm.expanded }
@@ -93,7 +102,14 @@ struct AgentModeView: View {
 struct AgentPanelView: View {
     @ObservedObject var agents: AgentWatchHub
 
-    static let expandedWidth: CGFloat = 300
+    /// Wide enough that the hover action cluster can appear without squeezing
+    /// the repo name into an ellipsis.
+    static let expandedWidth: CGFloat = 324
+
+    /// Which row the cursor is over, so only that row shows its actions. Held
+    /// here rather than per-row because the rows rebuild every second and would
+    /// drop their own `@State` hover flag each time.
+    @State private var hoveredID: String?
 
     var body: some View {
         let sessions = agents.table.ordered
@@ -119,43 +135,109 @@ struct AgentPanelView: View {
     }
 
     private func row(_ session: AgentSession, now: Date) -> some View {
-        Button { agents.focus(session) } label: {
-            HStack(spacing: 8) {
-                dot(for: session)
-                VStack(alignment: .leading, spacing: 1) {
-                    HStack(spacing: 6) {
-                        Text(session.displayName)
-                            .font(.system(size: 11, weight: .medium))
-                            .foregroundStyle(.white.opacity(0.9))
-                            .lineLimit(1).truncationMode(.middle)
-                        // What it's doing right now, in the phase's own colour
-                        // — the detail the rim can only gesture at.
-                        if let label = session.activityLabel {
-                            Text(label)
-                                .font(.system(size: 9, weight: .medium))
-                                .foregroundStyle(AgentPanelView.tint(session).opacity(0.85))
-                                .lineLimit(1).truncationMode(.tail)
+        let hovered = hoveredID == session.id
+        return HStack(spacing: 8) {
+            // The row body is still one big click target for "take me there";
+            // the actions sit outside it so a click on Interrupt can't also
+            // raise the window it's interrupting.
+            Button { agents.focus(session) } label: {
+                HStack(spacing: 8) {
+                    dot(for: session)
+                    VStack(alignment: .leading, spacing: 1) {
+                        HStack(spacing: 6) {
+                            Text(session.displayName)
+                                .font(.system(size: 11, weight: .medium))
+                                .foregroundStyle(.white.opacity(0.9))
+                                .lineLimit(1).truncationMode(.middle)
+                            // What it's doing right now, in the phase's own colour
+                            // — the detail the rim can only gesture at.
+                            if let label = session.activityLabel {
+                                Text(label)
+                                    .font(.system(size: 9, weight: .medium))
+                                    .foregroundStyle(AgentPanelView.tint(session).opacity(0.85))
+                                    .lineLimit(1).truncationMode(.tail)
+                            }
                         }
+                        // Who this is and where it lives — the line that tells
+                        // three concurrent harnesses apart at a glance.
+                        Text(AgentPanelFormat.identity(source: session.sourceLabel,
+                                                       app: TerminalFocus.owningAppName(of: session.pid)))
+                            .font(.system(size: 8, weight: .medium))
+                            .foregroundStyle(.white.opacity(0.38))
+                            .lineLimit(1).truncationMode(.tail)
                     }
-                    // Who this is and where it lives — the line that tells
-                    // three concurrent harnesses apart at a glance.
-                    Text(AgentPanelFormat.identity(source: session.sourceLabel,
-                                                   app: TerminalFocus.owningAppName(of: session.pid)))
-                        .font(.system(size: 8, weight: .medium))
-                        .foregroundStyle(.white.opacity(0.38))
-                        .lineLimit(1).truncationMode(.tail)
+                    Spacer(minLength: 6)
                 }
-                Spacer(minLength: 6)
+                .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+
+            // Elapsed gives way to the actions on hover: the same trailing slot
+            // either way, so rows never reflow under the cursor.
+            ZStack(alignment: .trailing) {
                 Text(AgentPanelFormat.elapsed(since: session.stateSince, now: now))
                     .font(.system(size: 9, weight: .medium, design: .monospaced))
                     .foregroundStyle(.white.opacity(0.4))
                     .monospacedDigit()
+                    .opacity(hovered ? 0 : 1)
+                if hovered { actions(for: session).transition(.opacity) }
             }
-            .padding(.horizontal, 16)
-            .frame(height: AgentPanelFormat.rowHeight)
-            .contentShape(Rectangle())
+            .frame(width: actionClusterWidth, alignment: .trailing)
         }
-        .buttonStyle(.plain)
+        .padding(.horizontal, 16)
+        .frame(height: AgentPanelFormat.rowHeight)
+        .background(Color.white.opacity(hovered ? 0.05 : 0))
+        .contentShape(Rectangle())
+        .onHover { inside in
+            withAnimation(.easeOut(duration: 0.12)) {
+                if inside { hoveredID = session.id }
+                else if hoveredID == session.id { hoveredID = nil }
+            }
+        }
+    }
+
+    /// Fits three 22pt buttons; the elapsed label is never wider than "999h".
+    private var actionClusterWidth: CGFloat { 70 }
+
+    /// Per-session actions, revealed on hover.
+    ///
+    /// Only actions that can actually work are shown — a gateway session has no
+    /// terminal to raise, no directory to reveal and no pid to signal, so its
+    /// row simply keeps its elapsed label rather than offering three buttons
+    /// that would all no-op.
+    @ViewBuilder
+    private func actions(for session: AgentSession) -> some View {
+        HStack(spacing: 2) {
+            if case .terminal = session.destination {
+                action("arrow.up.forward.app", help: "Focus terminal") {
+                    agents.focus(session)
+                }
+            }
+            if !session.cwd.isEmpty {
+                action("folder", help: "Reveal \(session.cwd) in Finder") {
+                    agents.reveal(session)
+                }
+            }
+            if agents.canInterrupt(session) {
+                // Ctrl-C, not a kill — see AgentWatchHub.interrupt.
+                action("stop.circle", help: "Interrupt (sends Ctrl-C)", tint: NotchRim.amber) {
+                    agents.interrupt(session)
+                }
+            }
+        }
+    }
+
+    private func action(_ symbol: String, help: String, tint: Color = .white,
+                        run: @escaping () -> Void) -> some View {
+        Button(action: run) {
+            Image(systemName: symbol)
+                .font(.system(size: 10, weight: .semibold))
+                .foregroundStyle(tint)
+                .frame(width: 20, height: 20)
+                .contentShape(Rectangle())
+        }
+        .buttonStyle(RowActionButtonStyle())
+        .help(help)
     }
 
     @ViewBuilder
@@ -195,6 +277,25 @@ struct AgentPanelView: View {
         if s < 60 { return "\(s)s" }
         if s < 3600 { return "\(s / 60)m" }
         return "\(s / 3600)h"
+    }
+}
+
+/// Hover/press feedback for the row action buttons. Dim by default so the
+/// cluster reads as secondary to the row itself, and never so bright that a
+/// 20pt Interrupt button competes with the session name.
+private struct RowActionButtonStyle: ButtonStyle {
+    @State private var hovering = false
+    func makeBody(configuration: Configuration) -> some View {
+        configuration.label
+            .opacity(configuration.isPressed ? 0.5 : (hovering ? 1 : 0.55))
+            .background(
+                RoundedRectangle(cornerRadius: 5, style: .continuous)
+                    .fill(Color.white.opacity(hovering ? 0.12 : 0))
+            )
+            .scaleEffect(configuration.isPressed ? 0.88 : 1)
+            .animation(.easeOut(duration: 0.12), value: hovering)
+            .animation(.spring(response: 0.2, dampingFraction: 0.7), value: configuration.isPressed)
+            .onHover { hovering = $0 }
     }
 }
 

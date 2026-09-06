@@ -22,13 +22,29 @@ enum SpotifyController {
         NSWorkspace.shared.runningApplications.contains { $0.bundleIdentifier == bundleID }
     }
 
+    /// One round trip for everything the island shows.
+    ///
+    /// The player settings (volume, shuffle, repeat) are read inside a `try`
+    /// and default to sane values: they're a nice-to-have, and a Spotify build
+    /// that refuses one of the three must not be able to take the whole
+    /// now-playing read down with it. The payload keeps its original eight
+    /// fields in their original order, so an older reply still parses.
     private static let getScript = """
     tell application id "com.spotify.client"
         set d to (ASCII character 9)
         set s to (player state as text)
-        if s is "stopped" then return s
+        set v to 0
+        set sh to false
+        set rp to false
+        try
+            set v to (sound volume as integer)
+            set sh to (shuffling as boolean)
+            set rp to (repeating as boolean)
+        end try
+        set tail to d & (v as text) & d & (sh as text) & d & (rp as text)
+        if s is "stopped" then return s & d & "" & d & "" & d & "" & d & "0" & d & "0" & d & "" & d & "" & tail
         set t to current track
-        return s & d & (name of t) & d & (artist of t) & d & (album of t) & d & (duration of t as text) & d & (player position as text) & d & (artwork url of t) & d & (id of t)
+        return s & d & (name of t) & d & (artist of t) & d & (album of t) & d & (duration of t as text) & d & (player position as text) & d & (artwork url of t) & d & (id of t) & tail
     end tell
     """
 
@@ -51,6 +67,19 @@ enum SpotifyController {
     static func next() { run("next track") }
     static func previous() { run("previous track") }
     static func seek(toSeconds seconds: Double) { run("set player position to \(Int(seconds))") }
+
+    /// Spotify's own output level, 0…100 — not the system volume, so turning
+    /// it down here leaves everything else on the machine alone.
+    static func setVolume(_ percent: Int) {
+        run("set sound volume to \(clampVolume(percent))")
+    }
+
+    static func setShuffling(_ on: Bool) { run("set shuffling to \(on)") }
+    static func setRepeating(_ on: Bool) { run("set repeating to \(on)") }
+
+    /// AppleScript silently clamps out-of-range volumes on some builds and
+    /// errors on others; do it here so the behaviour is ours.
+    static func clampVolume(_ percent: Int) -> Int { min(100, max(0, percent)) }
 
     private static func run(_ command: String) {
         guard isRunning() else { return }

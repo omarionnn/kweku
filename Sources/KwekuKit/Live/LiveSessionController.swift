@@ -8,7 +8,21 @@ import Combine
 @MainActor
 public final class LiveSessionController: ObservableObject {
     @Published public private(set) var running = false
-    @Published public private(set) var status = ""
+
+    /// Where the socket is in its lifecycle. See `LivePhase` for why this is no
+    /// longer the same field as the screen-capture health.
+    @Published public private(set) var phase: LivePhase = .idle
+
+    /// What Kweku can see right now — the window being streamed, whether it's
+    /// being blanked, or why there's nothing at all.
+    @Published public private(set) var vision: LiveVision = .pending
+
+    /// When the current session started, for the panel's clock.
+    @Published public private(set) var startedAt: Date?
+
+    /// One short line for the right-click menu. Derived, so it can't disagree
+    /// with what the notch is showing.
+    public var status: String { phase.label }
 
     /// What Kweku is currently saying — drives the caption ticker. Accumulates
     /// through a turn and clears when the turn ends or the user barges in.
@@ -100,7 +114,7 @@ public final class LiveSessionController: ObservableObject {
     public func start() -> Bool {
         guard !running else { return true }
         // `connectSocket` reads the key itself; this is only the early exit.
-        guard Self.apiKey != nil else { status = "no API key"; return false }
+        guard Self.apiKey != nil else { phase = .failed(reason: "no API key"); return false }
 
         client.onEvent = { [weak self] event in self?.handle(event) }
         client.onClose = { [weak self] reason in
@@ -126,7 +140,7 @@ public final class LiveSessionController: ObservableObject {
             }
         }
         do { try audio.start() } catch {
-            status = "audio failed: \(error.localizedDescription)"
+            phase = .failed(reason: "audio failed: \(error.localizedDescription)")
             client.disconnect()
             return false
         }
@@ -134,7 +148,9 @@ public final class LiveSessionController: ObservableObject {
             DispatchQueue.main.async {
                 MainActor.assumeIsolated {
                     guard let self else { return }
-                    self.status = issue
+                    // Vision has its own axis now: a capture failure no longer
+                    // wipes out the line saying the session itself is healthy.
+                    self.vision = .unavailable(reason: issue)
                     // A status line is easy to miss, and a blind Kweku that
                     // doesn't know it's blind narrates the screen from its
                     // prompt instead. Tell the model directly so the failure
@@ -152,7 +168,12 @@ public final class LiveSessionController: ObservableObject {
         // unprompted — see `TriageTrigger` for why this is so heavily muzzled.
         screen.onAim = { [weak self] app, title, redacted in
             MainActor.assumeIsolated {
-                guard let self, !redacted else { return }
+                guard let self else { return }
+                // Publish what's being streamed before anything else decides
+                // whether to act on it: the user is entitled to see which
+                // window is leaving the machine, redacted or not.
+                self.vision = .watching(app: app, title: title, redacted: redacted)
+                guard !redacted else { return }
                 let (fire, next) = TriageTrigger.evaluate(
                     app: app, title: title, state: self.triage, now: Date(),
                     sessionLive: self.running, busy: self.speaking || self.composing)
@@ -164,21 +185,61 @@ public final class LiveSessionController: ObservableObject {
         screen.startStreaming { [weak self] jpeg in self?.client.sendVideoFrame(jpeg) }
 
         running = true
-        status = "connecting"
+        startedAt = Date()
+        phase = .connecting
+        // A session that opens without Screen Recording is blind from the
+        // start, and says so before the first frame would have arrived.
+        vision = ScreenCaptureManager.hasScreenAccess
+            ? .pending
+            : .unavailable(reason: ScreenCaptureManager.permissionIssue)
         return true
     }
 
-    public func stop() {
+    /// Stop by hand: the session ended because you said so, so it leaves no
+    /// error behind.
+    public func stop() { stop(keepingReason: false) }
+
+    /// `keepingReason` holds on to the `closed:`/`failed:` phase the caller
+    /// just set, so a session that died on its own can still say why — while a
+    /// session you stopped yourself doesn't leave a stale error in the menu.
+    private func stop(keepingReason: Bool) {
         guard running else { return }
         pendingVisionNote = nil
         screen.stop()
         audio.stop()
         client.disconnect()
         running = false
+        startedAt = nil
         speaking = false
+        if !keepingReason { phase = .idle }
+        vision = .pending
         setComposing(false)
         clearTranscripts()
         memory.save()
+    }
+
+    // MARK: - Notch controls
+
+    /// Cut Kweku off mid-sentence from the notch, without having to talk over
+    /// it. Mirrors a spoken barge-in: playback is dropped and the caption goes,
+    /// but `heard` is left alone because the user is about to fill it.
+    @discardableResult
+    public func hush() -> Bool {
+        guard running, speaking else { return false }
+        interrupting = true
+        audio.interruptPlayback()
+        interrupting = false
+        setComposing(false)
+        screen.noteUserTurn()
+        caption = ""
+        return true
+    }
+
+    /// Switch the microphone off and on. The session stays up — this is the
+    /// "hold on a second" button, not the stop button.
+    public func toggleMute() {
+        guard running else { return }
+        audio.setMuted(!audio.micMuted)
     }
 
     /// Enter or leave the thinking beat, arming the watchdog on the way in so
@@ -285,7 +346,7 @@ public final class LiveSessionController: ObservableObject {
         guard running else { return }
         if resumeHandle != nil, reconnectAttempts < 3 {
             reconnectAttempts += 1
-            status = "resuming session (\(reconnectAttempts))"
+            phase = .resuming(attempt: reconnectAttempts)
             DispatchQueue.main.asyncAfter(deadline: .now() + 0.6) { [weak self] in
                 MainActor.assumeIsolated {
                     guard let self, self.running else { return }
@@ -293,14 +354,14 @@ public final class LiveSessionController: ObservableObject {
                 }
             }
         } else {
-            status = "closed: \(reason)"
-            stop()
+            phase = .closed(reason: reason)
+            stop(keepingReason: true)
         }
     }
     private func handle(_ event: GeminiServerEvent) {
         switch event {
         case .setupComplete:
-            status = "live"
+            phase = .live
             reconnectAttempts = 0
             // Also replayed after a resume: the new socket knows nothing about
             // a capture failure raised on the old one.
@@ -359,7 +420,7 @@ public final class LiveSessionController: ObservableObject {
                 self?.client.sendToolResponse(id: id, name: name, output: output)
             }
         case .goAway:
-            status = "server ending session"
+            phase = .closed(reason: "server ending session")
         case .turnComplete:
             setComposing(false)          // nothing more is coming for this turn
             audio.flushPlayback()        // play out the sub-block tail

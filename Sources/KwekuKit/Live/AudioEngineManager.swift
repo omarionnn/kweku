@@ -14,6 +14,21 @@ import Combine
 public final class AudioEngineManager: ObservableObject {
     @Published public private(set) var currentSpeakerAmplitude: Float = 0
 
+    /// Mic input level, 0…1, on the same perceptual scale as the speaker.
+    /// Published so the panel can show that you are actually being heard —
+    /// previously only the *output* had a level, so a dead microphone and a
+    /// quiet room looked identical.
+    @Published public private(set) var currentMicAmplitude: Float = 0
+
+    /// True while the half-duplex gate is dropping input because Kweku is
+    /// speaking (plus the echo tail). Surfaced rather than hidden: the engine
+    /// going deliberately deaf for a beat is indistinguishable from a broken
+    /// microphone unless the UI says which one it is.
+    @Published public private(set) var micGated = false
+
+    /// True when the user has switched the mic off from the notch.
+    @Published public private(set) var micMuted = false
+
     var onMicChunk: ((Data) -> Void)?
     /// Fires on real silent↔speaking transitions of the playback queue. The
     /// falling edge is the true "Kweku stopped talking" moment; `turnComplete`
@@ -48,6 +63,8 @@ public final class AudioEngineManager: ObservableObject {
     // Half-duplex mic gate (read from the audio thread).
     private let gateLock = NSLock()
     private var micMutedUntil: TimeInterval = 0
+    /// User mute, read on the audio thread under the same lock as the gate.
+    private var userMuted = false
 
     // MARK: - Lifecycle
 
@@ -81,17 +98,31 @@ public final class AudioEngineManager: ObservableObject {
         inFlight = 0
         draining = false
         setMicMuted(until: 0)
-        DispatchQueue.main.async { self.currentSpeakerAmplitude = 0 }
+        // Mute is a per-session choice, not a preference: arriving at a fresh
+        // session already muted would be a silent trap.
+        setMuted(false)
+        DispatchQueue.main.async {
+            self.currentSpeakerAmplitude = 0
+            self.currentMicAmplitude = 0
+            self.micGated = false
+        }
     }
 
     // MARK: - Mic → 16 kHz PCM (audio thread)
 
     private func convertAndForward(_ buffer: AVAudioPCMBuffer) {
-        // Half-duplex: drop mic input while Kweku is speaking.
+        // Half-duplex: drop mic input while Kweku is speaking. User mute is a
+        // separate reason for the same silence, and the UI needs to tell them
+        // apart, so they're published as two flags rather than one.
         gateLock.lock()
         let mutedUntil = micMutedUntil
+        let muted = userMuted
         gateLock.unlock()
-        guard Date().timeIntervalSince1970 >= mutedUntil else { return }
+        let gated = Date().timeIntervalSince1970 < mutedUntil
+        guard !gated, !muted else {
+            publishMic(level: 0, gated: gated)
+            return
+        }
 
         guard let converter = micConverter else { return }
         let ratio = micFormat.sampleRate / buffer.format.sampleRate
@@ -107,8 +138,36 @@ public final class AudioEngineManager: ObservableObject {
         }
         guard out.frameLength > 0, let channel = out.int16ChannelData?[0] else { return }
         let data = Data(bytes: channel, count: Int(out.frameLength) * 2)
+        publishMic(level: AudioMath.uiLevel(fromRMS: AudioMath.rms(pcm16: data)), gated: false)
         logMicLevel(data)
         onMicChunk?(data)
+    }
+
+    /// Hop the audio thread's reading onto main for publication.
+    ///
+    /// Assigns only on a visible change: this runs per mic buffer (~12/s), and
+    /// an unconditional write would drive a SwiftUI invalidation every time
+    /// regardless of whether the meter would move a pixel.
+    private func publishMic(level: Float, gated: Bool) {
+        DispatchQueue.main.async { [weak self] in
+            guard let self else { return }
+            if abs(self.currentMicAmplitude - level) > 0.01 { self.currentMicAmplitude = level }
+            if self.micGated != gated { self.micGated = gated }
+        }
+    }
+
+    /// Switch the microphone off without tearing the session down. The socket
+    /// stays up, so Kweku can still finish what it was saying and be spoken to
+    /// again the moment this is switched back.
+    public func setMuted(_ on: Bool) {
+        gateLock.lock()
+        userMuted = on
+        gateLock.unlock()
+        DispatchQueue.main.async { [weak self] in
+            guard let self else { return }
+            self.micMuted = on
+            if on { self.currentMicAmplitude = 0 }
+        }
     }
 
     private func setMicMuted(until: TimeInterval) {

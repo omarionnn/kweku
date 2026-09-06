@@ -27,6 +27,17 @@ enum SystemSensors {
         return (false, 1) // no battery (desktop): treat as full, not charging
     }
 
+    /// Whether this machine has a battery at all. `power()` deliberately
+    /// reports a desktop as "full and not charging" so the creature never
+    /// yawns at a Mac mini; the stats panel needs to tell the two apart, so it
+    /// can show disk where a battery meter would be meaningless.
+    static func hasBattery() -> Bool {
+        guard let blob = IOPSCopyPowerSourcesInfo()?.takeRetainedValue(),
+              let list = IOPSCopyPowerSourcesList(blob)?.takeRetainedValue() as? [CFTypeRef]
+        else { return false }
+        return !list.isEmpty
+    }
+
     // MARK: Camera (CoreMediaIO)
 
     static func cameraInUse() -> Bool {

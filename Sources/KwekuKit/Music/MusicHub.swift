@@ -25,6 +25,9 @@ public final class MusicHub: ObservableObject {
     private var loadedArtworkURL: String?
     private var lastPlayingAt: Date = .distantPast
     private var observers: [NSObjectProtocol] = []
+    /// Volume-write throttle state — see `setVolume`.
+    private var volumeSentAt: Date = .distantPast
+    private var volumeFlush: DispatchWorkItem?
 
     public init() {
         let center = NSWorkspace.shared.notificationCenter
@@ -141,6 +144,57 @@ public final class MusicHub: ObservableObject {
         SpotifyController.seek(toSeconds: seconds)
         now.positionSec = seconds
         reanchor()
+    }
+
+    /// Set Spotify's output level, 0…100.
+    ///
+    /// The local value moves immediately so the slider tracks the cursor, but
+    /// the AppleScript write is throttled. A drag across the bar crosses ~100
+    /// whole percents, and `NSAppleScript.executeAndReturnError` is synchronous
+    /// on the main thread — sending one per sample would stutter the very
+    /// animation the slider is trying to draw. Trailing-edge, so the value you
+    /// release on is always the value that lands.
+    public func setVolume(_ percent: Int) {
+        let clamped = SpotifyController.clampVolume(percent)
+        guard clamped != now.volume else { return }
+        now.volume = clamped
+        scheduleVolumeSend(clamped)
+    }
+
+    /// Ceiling of ~12 writes a second — far below what a drag generates, far
+    /// above what a finger can perceive as lag.
+    private static let volumeSendInterval: TimeInterval = 0.08
+
+    private func scheduleVolumeSend(_ value: Int) {
+        volumeFlush?.cancel()
+        volumeFlush = nil
+        let since = Date().timeIntervalSince(volumeSentAt)
+        guard since < Self.volumeSendInterval else { return sendVolume(value) }
+
+        let work = DispatchWorkItem { [weak self] in
+            MainActor.assumeIsolated { self?.sendVolume(value) }
+        }
+        volumeFlush = work
+        DispatchQueue.main.asyncAfter(deadline: .now() + (Self.volumeSendInterval - since),
+                                      execute: work)
+    }
+
+    private func sendVolume(_ value: Int) {
+        volumeFlush = nil
+        volumeSentAt = Date()
+        SpotifyController.setVolume(value)
+    }
+
+    public func toggleShuffle() {
+        let next = !now.shuffling
+        SpotifyController.setShuffling(next)
+        now.shuffling = next
+    }
+
+    public func toggleRepeat() {
+        let next = !now.repeating
+        SpotifyController.setRepeating(next)
+        now.repeating = next
     }
 
     /// Pin the clock to what we currently believe, as of now.

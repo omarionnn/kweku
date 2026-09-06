@@ -108,16 +108,24 @@ enum NotchUITests {
     // MARK: Mode cycling
 
     static func modeCycle() {
+        // Written against `allCases` rather than named modes: adding a
+        // component shouldn't mean rewriting the cycling tests, only extending
+        // the list they derive from.
+        let all = NookMode.allCases
+        let count = all.count
+
         Check.run("modes advance and wrap both ways") {
-            Check.ok(NookMode.critter.advanced(by: 1) == .weather, "critter -> weather")
-            Check.ok(NookMode.weather.advanced(by: 1) == .agents, "weather -> agents")
-            Check.ok(NookMode.agents.advanced(by: 1) == .critter, "wraps forward")
-            Check.ok(NookMode.critter.advanced(by: -1) == .agents, "wraps backward")
+            Check.ok(NookMode.critter.advanced(by: 1) == all[1], "critter -> next")
+            Check.ok(all[1].advanced(by: 1) == all[2], "and on to the one after")
+            Check.ok(all[count - 1].advanced(by: 1) == .critter, "wraps forward")
+            Check.ok(NookMode.critter.advanced(by: -1) == all[count - 1], "wraps backward")
             Check.ok(NookMode.critter.advanced(by: 0) == .critter, "zero is identity")
         }
         Check.run("multi-step flips stay in range") {
-            Check.ok(NookMode.critter.advanced(by: 7) == .weather, "7 forward")
-            Check.ok(NookMode.critter.advanced(by: -7) == .agents, "7 backward")
+            Check.ok(NookMode.critter.advanced(by: count) == .critter, "a full turn is identity")
+            Check.ok(NookMode.critter.advanced(by: count + 3) == all[3 % count], "wraps past the end")
+            Check.ok(NookMode.critter.advanced(by: -(count + 3)) == all[(count - 3 % count) % count],
+                     "and past the start")
         }
         Check.run("modes survive a round trip through UserDefaults") {
             for mode in NookMode.allCases {

@@ -2,25 +2,15 @@ import SwiftUI
 import AppKit
 
 
-/// What lives in the nook when music isn't playing. Scrolling over the notch
-/// steps through these in order.
-public enum NookMode: String, CaseIterable {
-    case critter, weather, agents
-
-    /// The mode `step` places away, wrapping in both directions.
-    public func advanced(by step: Int) -> NookMode {
-        let all = NookMode.allCases
-        guard let index = all.firstIndex(of: self) else { return .critter }
-        let n = all.count
-        return all[((index + step) % n + n) % n]
-    }
-}
-
 /// Top-level content injected into the notch window. Owns the creature, shelf,
 /// sensor and music models; handles drops and the right-click menu. Each mode
-/// (creature+shelf, weather, agents, Spotify) is a self-contained view that
-/// draws the shared `NotchPanelShape` as its own seamless background and
+/// (creature+shelf, weather, agents, system, Spotify) is a self-contained view
+/// that draws the shared `NotchPanelShape` as its own seamless background and
 /// strokes a `NotchRim` over it for ambient state.
+///
+/// The modes themselves live in `NookComponent.swift`: a component declares its
+/// own sizing there, so adding one doesn't mean editing the sizing arithmetic
+/// down in `updateSize()` as well.
 struct NotchContentRoot: View {
     @ObservedObject var vm: NotchViewModel
     @StateObject private var creature: CreatureState
@@ -29,6 +19,7 @@ struct NotchContentRoot: View {
     @StateObject private var music = MusicHub()
     @StateObject private var agents = AgentWatchHub()
     @StateObject private var weather = WeatherHub()
+    @StateObject private var stats = StatsHub()
     @StateObject private var live = LiveSessionController()
 
     @State private var isTargeted = false
@@ -61,8 +52,11 @@ struct NotchContentRoot: View {
         !hidden && open && !vm.expanded && agents.table.count > 0
             && (mode == .critter || music.isShowing)
     }
+    /// The caption strip is the *collapsed* session's transcript. Expanded, the
+    /// Live panel carries the same two lines itself, so showing both would be
+    /// the same words twice.
     private var showCaptions: Bool {
-        !hidden && live.running && !(live.caption.isEmpty && live.heard.isEmpty)
+        !hidden && live.running && !open && !(live.caption.isEmpty && live.heard.isEmpty)
     }
 
     /// One ambient signal on the rim at a time, most urgent first.
@@ -78,12 +72,16 @@ struct NotchContentRoot: View {
     var body: some View {
         ZStack(alignment: .top) {
             Color.clear
-            if music.isShowing {
+            if live.running && !hidden {
+                liveStack
+            } else if music.isShowing {
                 musicStack
             } else if mode == .weather && !hidden {
                 weatherStack
             } else if mode == .agents && !hidden {
                 agentStack
+            } else if mode == .stats && !hidden {
+                statsStack
             } else {
                 critterStack
             }
@@ -141,19 +139,26 @@ struct NotchContentRoot: View {
         .onChange(of: live.heard) { _ in updateSize() }
         .onChange(of: live.running) { running in
             creature.setLive(running)
+            syncDraggable()
             updateSize()
         }
         .onChange(of: live.composing) { creature.setLiveThinking($0) }
         .onChange(of: mode) { m in
             UserDefaults.standard.set(m.rawValue, forKey: "nookMode")
+            // Components that poll only do so while they're the one showing.
             weather.setActive(m == .weather)
+            stats.setActive(m == .stats)
             updateSize()
         }
+        // No `onChange(of: stats.snapshot)`: the stats panel is a fixed size
+        // whatever the numbers say, and re-laying out the window twice a
+        // second to discover that would be pure churn.
         .onReceive(live.audio.$currentSpeakerAmplitude) { creature.setVoice(level: $0) }
         .onAppear {
             syncDraggable(); updateSize(); creature.apply(sensors.snapshot)
             lastCycleStep = vm.cycleSteps
             if mode == .weather { weather.setActive(true) }
+            if mode == .stats { stats.setActive(true) }
             live.ompCwdProvider = { agents.table.focusTarget()?.cwd }
             live.externalActivity = { id, state in agents.noteExternal(id: id, state: state) }
             // A stalled agent is only visible to someone looking at the panel.
@@ -187,6 +192,26 @@ struct NotchContentRoot: View {
         VStack(spacing: 0) {
             AgentModeView(agents: agents, vm: vm, rim: rim)
                 .frame(height: vm.notchSize.height + agentModeBody)
+            strips
+        }
+    }
+
+    /// A running session takes the nook over — it outranks even the music
+    /// island, because a voice conversation is something you're doing and the
+    /// island is something happening in the background. The island comes back
+    /// the moment the session ends.
+    private var liveStack: some View {
+        VStack(spacing: 0) {
+            LiveModeView(live: live, audio: live.audio, vm: vm, rim: rim)
+                .frame(height: vm.notchSize.height + liveBody)
+            strips
+        }
+    }
+
+    private var statsStack: some View {
+        VStack(spacing: 0) {
+            StatsView(stats: stats, vm: vm, rim: rim)
+                .frame(height: vm.notchSize.height + body(for: .stats))
             strips
         }
     }
@@ -247,28 +272,69 @@ struct NotchContentRoot: View {
         DispatchQueue.main.asyncAfter(deadline: .now() + 2.2, execute: work)
     }
 
-    /// The creature may be dragged along the notch; the music island (with its
-    /// scrubber and buttons) must never move the window.
+    /// The creature may be dragged along the notch; panels with controls in
+    /// them — the music island's scrubber, the Live panel's mic meter and
+    /// buttons — must never move the window instead of taking the click.
     private func syncDraggable() {
-        let draggable = !music.isShowing
+        let draggable = !music.isShowing && !live.running
         if vm.contentDraggable != draggable { vm.contentDraggable = draggable }
     }
 
     // MARK: - Sizing
 
-    private var weatherBody: CGFloat { open ? WeatherView.expandedBody : WeatherView.peek }
+    /// The live facts a component's size may depend on.
+    private var nookContext: NookContext { NookContext(agentCount: agents.table.count) }
+
+    /// Body height a mode wants right now, in the current open state.
+    private func body(for mode: NookMode) -> CGFloat {
+        mode.metrics(nookContext).body(open: open)
+    }
+
+    private var weatherBody: CGFloat { body(for: .weather) }
+    private var agentModeBody: CGFloat { body(for: .agents) }
     private var musicBody: CGFloat { open ? NowPlayingView.expandedBody : NowPlayingView.lip }
-    private var agentModeBody: CGFloat {
-        open ? AgentModeView.expandedBody(for: agents.table.count) : AgentModeView.peek
+    private var liveMetrics: NookMetrics { LiveModeView.metrics(nookContext) }
+    private var liveBody: CGFloat { liveMetrics.body(open: open) }
+
+    /// Everything hanging below the mode body, in stacking order. Drop targets
+    /// replace the rest while a drag is armed, matching `strips`.
+    private var stripMetrics: [NookLayout.Strip] {
+        if showDropTargets {
+            return [.init(height: DropTargetsView.bodyHeight,
+                          minWidth: DropTargetsView.expandedWidth)]
+        }
+        var strips: [NookLayout.Strip] = []
+        if showAgentPanel {
+            strips.append(.init(height: AgentPanelFormat.bodyHeight(for: agents.table.count),
+                                minWidth: AgentPanelView.expandedWidth))
+        }
+        if showCaptions {
+            strips.append(.init(height: LiveCaptionView.bodyHeight,
+                                minWidth: LiveCaptionView.expandedWidth))
+        }
+        if showShelf {
+            strips.append(.init(height: shelfPanelHeight, minWidth: shelfPanelWidth))
+        }
+        return strips
     }
 
     private func updateSize() {
         let base = vm.notchSize
         guard base != .zero else { return }
-        var width = base.width
-        var height = base.height
 
-        if music.isShowing {
+        // Same precedence as the body: a running session, then the island,
+        // then whichever mode is selected.
+        guard !live.running else {
+            vm.desiredSize = NookLayout.size(base: base, metrics: liveMetrics,
+                                             open: open, strips: stripMetrics)
+            return
+        }
+
+        guard !music.isShowing else {
+            // The island is its own layout: it *contains* the cutout rather
+            // than hanging below it, so it doesn't go through NookLayout.
+            var width: CGFloat
+            var height: CGFloat
             if open {
                 width = NowPlayingView.expandedWidth
                 height = base.height + NowPlayingView.expandedBody
@@ -277,38 +343,16 @@ struct NotchContentRoot: View {
                 width = base.width + 2 * NowPlayingView.wing
                 height = base.height + NowPlayingView.lip
             }
-        } else {
-            switch mode {
-            case .critter:
-                height += CreatureView.peek
-            case .weather:
-                height += weatherBody
-                if open { width = max(width, WeatherView.expandedWidth) }
-            case .agents:
-                height += agentModeBody
-                if open { width = max(width, AgentModeView.expandedWidth) }
+            for strip in stripMetrics {
+                width = max(width, strip.minWidth)
+                height += strip.height
             }
+            vm.desiredSize = CGSize(width: width, height: height)
+            return
         }
 
-        // Strips below the mode body.
-        if showDropTargets {
-            width = max(width, DropTargetsView.expandedWidth)
-            height += DropTargetsView.bodyHeight
-        } else {
-            if showAgentPanel {
-                width = max(width, AgentPanelView.expandedWidth)
-                height += AgentPanelFormat.bodyHeight(for: agents.table.count)
-            }
-            if showCaptions {
-                width = max(width, LiveCaptionView.expandedWidth)
-                height += LiveCaptionView.bodyHeight
-            }
-            if showShelf {
-                width = max(width, shelfPanelWidth)
-                height += shelfPanelHeight
-            }
-        }
-        vm.desiredSize = CGSize(width: width, height: height)
+        vm.desiredSize = NookLayout.size(base: base, mode: mode, open: open,
+                                         context: nookContext, strips: stripMetrics)
     }
 
     /// Small modal for the manual-city fallback (spec: CoreLocation with a
@@ -351,14 +395,12 @@ struct NotchContentRoot: View {
     }
 
     @ViewBuilder private var menu: some View {
-        Button(action: { mode = .critter }) {
-            Label("Critter", systemImage: mode == .critter ? "checkmark" : "")
-        }
-        Button(action: { mode = .weather }) {
-            Label("Weather", systemImage: mode == .weather ? "checkmark" : "")
-        }
-        Button(action: { mode = .agents }) {
-            Label("Agents", systemImage: mode == .agents ? "checkmark" : "")
+        // Built from the component list, so a new component appears in the
+        // menu and the scroll cycle from the same one-line registration.
+        ForEach(NookMode.allCases, id: \.self) { item in
+            Button(action: { mode = item }) {
+                Label(item.title, systemImage: mode == item ? "checkmark" : "")
+            }
         }
         if mode == .weather {
             Button("Set City…") { promptForCity() }

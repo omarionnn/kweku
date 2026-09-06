@@ -5,7 +5,7 @@ import SwiftUI
 /// in the visible band below the cutout. Self-contained + a `Color.clear`
 /// flexible filler — the layout pattern that stays stable inside the overlay
 /// window.
-struct CreatureView: View {
+struct CreatureView: View, NookComponent {
     @ObservedObject var state: CreatureState
     @ObservedObject var vm: NotchViewModel
     var rim: NotchRimStyle
@@ -13,6 +13,13 @@ struct CreatureView: View {
 
     /// Height of the face band that hangs below the notch cutout.
     static let peek: CGFloat = 30
+
+    /// The critter is the one component that doesn't grow on hover — it's the
+    /// same creature open or closed, and widening the notch around it would
+    /// only push it off its own centre.
+    static func metrics(_ context: NookContext) -> NookMetrics {
+        NookMetrics(peek: peek, expandedBody: peek, expandedWidth: 0)
+    }
 
     /// Slide speed (points/sec) at which the lean maxes out.
     private static let leanReach: CGFloat = 1400

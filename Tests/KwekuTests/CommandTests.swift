@@ -10,6 +10,11 @@ enum CommandTests {
         history()
         instructions()
         condensing()
+        ghosting()
+        recalling()
+        growth()
+        chipping()
+        escalations()
     }
 
     // MARK: State
@@ -112,6 +117,130 @@ enum CommandTests {
         Check.run("silence gets a word rather than an empty panel") {
             Check.ok(CommandFormat.condense("") == "(no output)", "empty")
             Check.ok(CommandFormat.condense("   \n ") == "(no output)", "whitespace only")
+        }
+    }
+
+    // MARK: Ghost completion
+
+    static let ring = ["fix the failing test", "fix the build", "open the PR"]
+
+    static func ghosting() {
+        Check.run("the ghost is the rest of the newest matching command") {
+            Check.ok(CommandFormat.ghost(for: "fix the f", in: ring) == "ailing test",
+                     "got \(CommandFormat.ghost(for: "fix the f", in: ring))")
+            Check.ok(CommandFormat.ghost(for: "open", in: ring) == " the PR", "later entries match too")
+        }
+        Check.run("matching ignores case but the suffix comes from history") {
+            // Accepting the ghost should leave you with the command that ran
+            // before, not a half-cased hybrid of it.
+            Check.ok(CommandFormat.ghost(for: "FIX THE B", in: ring) == "uild",
+                     "got \(CommandFormat.ghost(for: "FIX THE B", in: ring))")
+        }
+        Check.run("nothing to offer stays silent") {
+            Check.ok(CommandFormat.ghost(for: "", in: ring).isEmpty, "empty draft")
+            Check.ok(CommandFormat.ghost(for: "deploy", in: ring).isEmpty, "no match")
+            Check.ok(CommandFormat.ghost(for: "fix the build", in: ring).isEmpty,
+                     "an exact match has no remainder to show")
+            Check.ok(CommandFormat.ghost(for: "fix", in: []).isEmpty, "no history")
+        }
+        Check.run("a pasted trace predicts nothing") {
+            Check.ok(CommandFormat.ghost(for: "fix the\nbuild", in: ring).isEmpty,
+                     "multi-line drafts are not one-line commands")
+        }
+    }
+
+    // MARK: Recall
+
+    static func recalling() {
+        Check.run("↑ walks back and stops at the oldest") {
+            var i = CommandFormat.draftIndex
+            i = CommandFormat.recallIndex(from: i, by: 1, count: 3); Check.ok(i == 0, "first ↑")
+            i = CommandFormat.recallIndex(from: i, by: 1, count: 3); Check.ok(i == 1, "second ↑")
+            i = CommandFormat.recallIndex(from: i, by: 1, count: 3); Check.ok(i == 2, "third ↑")
+            i = CommandFormat.recallIndex(from: i, by: 1, count: 3)
+            Check.ok(i == 2, "stops rather than wrapping to the newest, got \(i)")
+        }
+        Check.run("↓ walks forward and hands the draft back") {
+            var i = 1
+            i = CommandFormat.recallIndex(from: i, by: -1, count: 3); Check.ok(i == 0, "one back")
+            i = CommandFormat.recallIndex(from: i, by: -1, count: 3)
+            Check.ok(i == CommandFormat.draftIndex, "past the newest is the draft")
+            i = CommandFormat.recallIndex(from: i, by: -1, count: 3)
+            Check.ok(i == CommandFormat.draftIndex, "and stays there, got \(i)")
+        }
+        Check.run("an empty ring never leaves the draft") {
+            Check.ok(CommandFormat.recallIndex(from: -1, by: 1, count: 0) == CommandFormat.draftIndex,
+                     "nothing to recall")
+        }
+        Check.run("the draft index reads as no entry") {
+            Check.ok(CommandFormat.recall(ring, at: CommandFormat.draftIndex) == nil, "draft")
+            Check.ok(CommandFormat.recall(ring, at: 1) == "fix the build", "an entry")
+            Check.ok(CommandFormat.recall(ring, at: 9) == nil, "off the end")
+        }
+    }
+
+    // MARK: Editor growth
+
+    static func growth() {
+        Check.run("the editor grows by lines and then stops") {
+            let line = CommandFormat.editorLineHeight
+            Check.ok(CommandFormat.editorHeight(measured: 4) == line, "never thinner than a line")
+            Check.ok(CommandFormat.editorHeight(measured: line * 3) == line * 3, "three lines")
+            let ceiling = line * CGFloat(CommandFormat.editorMaxLines)
+            Check.ok(CommandFormat.editorHeight(measured: line * 400) == ceiling,
+                     "a pasted log must not turn the notch into a window")
+        }
+        Check.run("line count is clamped the same way") {
+            let line = CommandFormat.editorLineHeight
+            Check.ok(CommandFormat.editorLines(measured: 0) == 1, "always at least one")
+            Check.ok(CommandFormat.editorLines(measured: line * 2) == 2, "two")
+            Check.ok(CommandFormat.editorLines(measured: line * 99) == CommandFormat.editorMaxLines,
+                     "capped")
+        }
+    }
+
+    // MARK: Chips
+
+    static func chipping() {
+        Check.run("the row reads: looking at, carrying, going to") {
+            let chips = CommandFormat.chips(contextApp: "Xcode", withScreen: false,
+                                            target: .openClaw)
+            Check.ok(chips.map(\.kind) == [.context, .screen, .route],
+                     "fixed order, got \(chips.map(\.kind))")
+            Check.ok(chips[0].label == "Xcode", "names the app it will read")
+            Check.ok(chips[2].label == "OpenClaw", "names where ⏎ goes")
+        }
+        Check.run("no known app means no chip claiming one") {
+            Check.ok(!CommandFormat.chips(contextApp: nil, withScreen: false, target: .openClaw)
+                        .contains { $0.kind == .context }, "nil")
+            Check.ok(!CommandFormat.chips(contextApp: "   ", withScreen: false, target: .openClaw)
+                        .contains { $0.kind == .context }, "blank")
+        }
+        Check.run("the screen chip is the only one you can press") {
+            let chips = CommandFormat.chips(contextApp: "Safari", withScreen: true,
+                                            target: .agent(cwd: "/Users/o/notch"))
+            let screen = chips.first { $0.kind == .screen }
+            Check.ok(screen?.on == true, "lit while attached")
+            Check.ok(screen?.actionable == true, "and pressable")
+            Check.ok(chips.filter(\.actionable).count == 1, "the others only state facts")
+            Check.ok(chips.last?.label == "notch", "route names the repo for an agent target")
+        }
+    }
+
+    // MARK: Escalation
+
+    static func escalations() {
+        Check.run("escalation carries the answer, not just the question") {
+            let text = CommandFormat.escalation(prompt: "why is the build red",
+                                                result: "missing symbol _foo")
+            Check.ok(text.contains("why is the build red"), "the original ask")
+            Check.ok(text.contains("missing symbol _foo"), "what came back")
+            Check.ok(text.lowercased().contains("openclaw"), "says who tried first")
+        }
+        Check.run("nothing came back, so there is nothing to quote") {
+            Check.ok(CommandFormat.escalation(prompt: "ship it", result: "") == "ship it", "bare")
+            Check.ok(CommandFormat.escalation(prompt: "ship it", result: "  \n ") == "ship it",
+                     "whitespace is nothing")
         }
     }
 }

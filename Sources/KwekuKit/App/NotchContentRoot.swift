@@ -33,6 +33,12 @@ struct NotchContentRoot: View {
     /// Transient confirmation after a drop is dispatched.
     @State private var toast: String?
     @State private var toastWork: DispatchWorkItem?
+    /// Bumped by ⌥Space. The command panel watches it rather than a flag, so
+    /// summoning twice re-focuses the field instead of doing nothing.
+    @State private var commandSummon = 0
+    /// Lines the command editor is showing, reported up by the panel so the
+    /// window grows under a pasted stack trace.
+    @State private var commandLines = 1
 
     private let shelfPanelHeight: CGFloat = 66
     private let shelfPanelWidth: CGFloat = 200
@@ -44,9 +50,29 @@ struct NotchContentRoot: View {
     }
 
     private var open: Bool { vm.isHovering || vm.expanded }
-    private var showShelf: Bool { !hidden && !shelf.items.isEmpty && open && !vm.expanded }
+    /// The shelf hangs under the open notch — except while typing. A strip
+    /// pinned at the panel's full height would float detached under the panel
+    /// as it grows out of the cutout, and a caret is no time to be filing.
+    private var showShelf: Bool {
+        !hidden && !shelf.items.isEmpty && open && !vm.expanded && mode != .command
+    }
     /// A drag is armed: offer the drop destinations instead of the usual body.
     private var showDropTargets: Bool { !hidden && vm.expanded && !music.isShowing }
+    /// The command panel outranks the Spotify island while it holds the
+    /// keyboard.
+    ///
+    /// Without this, ⌥Space is dead for as long as music is playing — the
+    /// island wins the nook, and the field you just summoned is never drawn.
+    /// A caret is like a running Live session: something you are *doing*, and
+    /// it beats something happening in the background.
+    ///
+    /// It gates the *island's* branch rather than adding one of its own. Given
+    /// its own `else if`, `commandStack` would appear at two positions in the
+    /// chain, SwiftUI would read those as two different views, and flipping
+    /// the takeover would tear the panel down and build it again — running
+    /// `onDisappear`, which hands the keyboard back, which flips the takeover
+    /// off again. The summon undid itself in about 20ms.
+    private var commandTakeover: Bool { !hidden && mode == .command && vm.wantsKeyboard }
     /// The hover-reveal session list, offered in critter mode as well as its
     /// own mode — it's the thing most worth surfacing when you look at Kweku.
     private var showAgentPanel: Bool {
@@ -75,7 +101,7 @@ struct NotchContentRoot: View {
             Color.clear
             if live.running && !hidden {
                 liveStack
-            } else if music.isShowing {
+            } else if music.isShowing && !commandTakeover {
                 musicStack
             } else if mode == .weather && !hidden {
                 weatherStack
@@ -138,6 +164,7 @@ struct NotchContentRoot: View {
             }
         }
         .onChange(of: weather.snapshot) { _ in updateSize() }
+        .onChange(of: commandLines) { _ in updateSize() }
         // The controller clears these on real playback drain, so the strip can
         // mirror them directly — it appears and goes exactly with the audio.
         .onChange(of: live.caption) { _ in updateSize() }
@@ -173,6 +200,11 @@ struct NotchContentRoot: View {
             // session does — to the most actionable session's repo.
             commands.agentCwdProvider = { agents.table.focusTarget()?.cwd }
             live.externalActivity = { id, state in agents.noteExternal(id: id, state: state) }
+            // A command typed at the notch is the same kind of thing as one
+            // spoken at it: same ember, same row in the session list, same
+            // click-to-open. Without this the typed path was the one piece of
+            // work Kweku did that Kweku didn't show.
+            commands.externalActivity = { id, state in agents.noteExternal(id: id, state: state) }
             // A stalled agent is only visible to someone looking at the panel.
             // When a Live session is open, say it instead — `interject` is a
             // no-op when there isn't one, or when Kweku is already talking.
@@ -183,6 +215,36 @@ struct NotchContentRoot: View {
             // repeat, so this is safe if the view reappears.
             HotKeyManager.shared.register(.toggleLive) { [live] in
                 if live.running { live.stop() } else { self.startLive() }
+            }
+            // ⌥Space drops the caret into the notch from whatever app you're
+            // in. It switches modes first: summoning a text box that then
+            // isn't showing would be worse than no shortcut at all.
+            HotKeyManager.shared.register(.summonCommand) {
+                // A running Live session owns the nook; summoning a field it
+                // would draw over is worse than the shortcut doing nothing.
+                guard !hidden, !live.running else { return }
+                // Read the front app *first*. Claiming the keyboard makes
+                // Kweku's panel key, and after that "the app you were in" is
+                // no longer a question the system can answer.
+                commands.captureContext()
+                // Then activate. A `.nonactivatingPanel` will report itself
+                // key and hold first responder while the window server goes
+                // on delivering every keystroke to the app that was in front —
+                // the panel looked focused and typing went to Finder. Only
+                // becoming the active app actually gets the keys. Kweku is an
+                // accessory with no menu bar, so this costs no visible chrome,
+                // and the front app is handed back on close.
+                NSApp.activate(ignoringOtherApps: true)
+                if mode != .command {
+                    withAnimation(.spring(response: 0.34, dampingFraction: 0.82)) {
+                        mode = .command
+                    }
+                }
+                // Claim the keyboard here rather than inside the panel: while
+                // the island is showing, the panel isn't on screen to claim it
+                // for itself, and the claim is what puts it there.
+                vm.wantsKeyboard = true
+                commandSummon += 1
             }
         }
         .contextMenu { menu }
@@ -237,7 +299,9 @@ struct NotchContentRoot: View {
 
     private var commandStack: some View {
         VStack(spacing: 0) {
-            CommandView(commands: commands, vm: vm, rim: rim)
+            CommandView(commands: commands, vm: vm, critter: creature, rim: rim,
+                        summon: commandSummon, editorLines: $commandLines,
+                        onOpenSession: { agents.focusCurrent() })
                 .frame(height: vm.notchSize.height + body(for: .command))
             strips
         }
@@ -310,7 +374,9 @@ struct NotchContentRoot: View {
     // MARK: - Sizing
 
     /// The live facts a component's size may depend on.
-    private var nookContext: NookContext { NookContext(agentCount: agents.table.count) }
+    private var nookContext: NookContext {
+        NookContext(agentCount: agents.table.count, commandLines: commandLines)
+    }
 
     /// Body height a mode wants right now, in the current open state.
     private func body(for mode: NookMode) -> CGFloat {
@@ -357,7 +423,7 @@ struct NotchContentRoot: View {
             return
         }
 
-        guard !music.isShowing else {
+        guard !music.isShowing || commandTakeover else {
             // The island is its own layout: it *contains* the cutout rather
             // than hanging below it, so it doesn't go through NookLayout.
             var width: CGFloat

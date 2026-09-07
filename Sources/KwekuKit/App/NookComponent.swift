@@ -57,9 +57,14 @@ public struct NookMetrics: Equatable {
 public struct NookContext: Equatable {
     /// Sessions in the agent table — the agent panel grows a row each.
     public var agentCount: Int
+    /// Lines the command editor is currently showing. A pasted stack trace
+    /// grows the field, and the panel has to grow under it or the caret ends
+    /// up behind the bottom edge.
+    public var commandLines: Int
 
-    public init(agentCount: Int = 0) {
+    public init(agentCount: Int = 0, commandLines: Int = 1) {
         self.agentCount = agentCount
+        self.commandLines = commandLines
     }
 }
 

@@ -52,8 +52,16 @@ notch. Scroll over the notch to cycle what it shows.
   into a coding-agent gateway. `⌥⌘K` toggles it from anywhere; captions hang under
   the notch.
 
-- **Command line.** Type at Kweku instead of talking to it — a prompt in the
-  notch, a send, and "fix what's on screen."
+- **Command line.** Type at Kweku instead of talking to it. `⌥Space` from any
+  app grows the panel out of the cutout with the caret already blinking — the
+  critter slides into the right wing as it opens. Chips above the field name
+  what it's looking at, whether the screen is riding along, and where ⏎ goes;
+  `↑` recalls, a ghost completion finishes the command you ran before, and a
+  pasted stack trace grows the field instead of scrolling sideways. An answer
+  comes with verbs — copy, run again, hand it to the agent in the repo, open
+  the session it became — and a typed command shows up in the agent panel like
+  any other session. "Fix what's on screen" still reads the foreground window
+  and hands the failure to a coding agent.
 
 - **Shelf, weather, stats.** Drag files onto the notch to stash and retrieve them;
   local weather (Open-Meteo + CoreLocation) and a system-stats panel are two more

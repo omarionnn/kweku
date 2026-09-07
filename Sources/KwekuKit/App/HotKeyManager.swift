@@ -45,6 +45,17 @@ public final class HotKeyManager {
         public static let toggleLive = Shortcut(keyCode: kVK_ANSI_K,
                                                 modifiers: optionKey | cmdKey,
                                                 label: "⌥⌘K")
+
+        /// Summons the command line: the notch opens with the caret already
+        /// blinking, from inside whatever app you were in.
+        ///
+        /// ⌥Space and not the obvious ⌘Space, which Spotlight owns — claiming
+        /// that here would either be refused outright or take Spotlight away
+        /// from the whole machine for as long as Kweku runs. ⌥Space costs the
+        /// non-breaking space, which is a fair trade for a one-hand summon.
+        public static let summonCommand = Shortcut(keyCode: kVK_Space,
+                                                   modifiers: optionKey,
+                                                   label: "⌥Space")
     }
 
     private var actions: [UInt32: () -> Void] = [:]

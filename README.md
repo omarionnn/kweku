@@ -44,6 +44,16 @@ notch. Scroll over the notch to cycle what it shows.
   Claude) with a per-session identity line, flips the face to "waiting" when one
   needs me, and a "pit crew" reports what each finished agent changed.
 
+- **Drops.** The notch tells me things without being asked. An agent finishes
+  and the notch extends for a couple of seconds with what it *left behind* —
+  `notch · 2 commits · 3 files +140/−12`, read from git, not from the agent —
+  then folds away. The rim carries the countdown so the retraction is never a
+  surprise. It stays quiet when I'm hovering it, typing into it, mid-drag, or
+  in a Live session; several at once queue rather than fight, and past three
+  they collapse into a count. "Pause Notices" in the menu is the off switch —
+  macOS no longer exposes Focus state to an unentitled app, so this is a real
+  switch rather than a guess at one.
+
 - **Spotify island.** Album art on the left, the creature in the right wing —
   music and the critter at once. Hovering opens a full card tinted with an accent
   pulled off the cover; open while agents run and the agent panel stacks below.

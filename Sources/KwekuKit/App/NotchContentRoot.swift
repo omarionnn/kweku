@@ -22,6 +22,7 @@ struct NotchContentRoot: View {
     @StateObject private var stats = StatsHub()
     @StateObject private var commands = CommandHub()
     @StateObject private var live = LiveSessionController()
+    @StateObject private var drops = DropHub()
 
     @State private var isTargeted = false
     @State private var hidden = false
@@ -102,14 +103,36 @@ struct NotchContentRoot: View {
         !hidden && live.running && !open && !(live.caption.isEmpty && live.heard.isEmpty)
     }
 
-    /// One ambient signal on the rim at a time, most urgent first.
+    /// One ambient signal on the rim at a time, most urgent first — except
+    /// with several sessions running, where the rim becomes a list of them.
     private var rim: NotchRimStyle {
         NotchRimStyle.resolve(attention: creature.agentWaiting,
                               live: live.running,
                               speaking: live.speaking,
                               voiceLevel: creature.voiceLevel,
                               working: creature.agentWorking,
-                              activity: creature.agentActivity)
+                              activity: creature.agentActivity,
+                              segments: rimSegments)
+    }
+
+    /// An arc per live session, newest activity first — the same order the
+    /// agent panel lists them in, so the rim and the panel agree.
+    private var rimSegments: [RimSegment] {
+        agents.table.ordered.prefix(RimSegments.maxArcs).map { session in
+            let state: RimSegment.State
+            switch session.state {
+            case .waiting: state = .waiting
+            case .working: state = .working(session.activity ?? .thinking)
+            case .idle:    state = .idle
+            }
+            return RimSegment(id: session.id, state: state)
+        }
+    }
+
+    /// Whether the notch may speak on its own right now.
+    private var dropGate: DropGate {
+        DropGate(hidden: hidden, hovering: open, typing: vm.wantsKeyboard,
+                 live: live.running, dragging: vm.expanded, muted: drops.muted)
     }
 
     var body: some View {
@@ -117,6 +140,13 @@ struct NotchContentRoot: View {
             Color.clear
             if live.running && !hidden {
                 liveStack
+            } else if let drop = drops.current {
+                // Above every mode but a running session: a drop is brief, and
+                // whatever it interrupts is still there two seconds later.
+                DropView(drop: drop, shownAt: drops.shownAt ?? Date(),
+                         presenting: drops.presenting, vm: vm,
+                         onTap: { drops.clear(); summonCommand() })
+                    .frame(height: vm.notchSize.height + DropView.bodyHeight)
             } else if music.isShowing && !commandTakeover {
                 musicStack
             } else if mode == .weather && !hidden {
@@ -185,6 +215,24 @@ struct NotchContentRoot: View {
         }
         .onChange(of: weather.snapshot) { _ in updateSize() }
         .onChange(of: commandLines) { _ in updateSize() }
+        .onChange(of: drops.current) { _ in updateSize() }
+        // One place for every reason the notch may or may not speak. A gate
+        // that just opened is also the moment to say whatever was queued
+        // while it was shut.
+        .onChange(of: dropGate) { gate in
+            gate.allows ? drops.pump() : drops.interrupt()
+        }
+        // A command that finished after you dismissed the panel still has an
+        // answer. Saying it is the whole point of drops — otherwise the work
+        // you started is only visible if you happen to look.
+        .onChange(of: commands.state) { state in
+            guard case .result(let text, let ok) = state else { return }
+            drops.post(NotchDrop(id: "command",
+                                 symbol: ok ? "sparkles" : "exclamationmark.triangle",
+                                 title: commands.lastTarget?.label ?? "OpenClaw",
+                                 detail: NotchDrop.firstLine(text),
+                                 tint: ok ? .done : .attention))
+        }
         // The controller clears these on real playback drain, so the strip can
         // mirror them directly — it appears and goes exactly with the audio.
         .onChange(of: live.caption) { _ in updateSize() }
@@ -238,6 +286,21 @@ struct NotchContentRoot: View {
             // When a Live session is open, say it instead — `interject` is a
             // no-op when there isn't one, or when Kweku is already talking.
             agents.onAttention = { prompt in live.interject(prompt) }
+            drops.gate = { dropGate }
+            // The same event the pit crew speaks, said under the cutout for
+            // when there's no session to speak into. What the agent left
+            // behind is the news; that it stopped is not.
+            agents.onReports = { entries in
+                for entry in entries {
+                    let work = entry.work
+                    let did = work.map { !$0.isEmpty } ?? false
+                    drops.post(NotchDrop(id: entry.session.id,
+                                         symbol: did ? "checkmark.circle" : "hand.raised",
+                                         title: entry.session.displayName,
+                                         detail: AgentReport.headline(work),
+                                         tint: did ? .done : .attention))
+                }
+            }
             // ⌥⌘K starts and stops Live from anywhere, so opening a session
             // doesn't mean finding the notch and right-clicking it first. Same
             // path as the menu item, key prompt included. The manager ignores a
@@ -471,6 +534,14 @@ struct NotchContentRoot: View {
             return
         }
 
+        // The window has to be at full size before the drop animates, or the
+        // panel is clipped as it grows — the same rule the summon follows.
+        guard drops.current == nil else {
+            vm.desiredSize = CGSize(width: max(base.width, DropView.expandedWidth),
+                                    height: base.height + DropView.bodyHeight)
+            return
+        }
+
         guard !music.isShowing || commandTakeover else {
             // The island is its own layout: it *contains* the cutout rather
             // than hanging below it, so it doesn't go through NookLayout.
@@ -561,6 +632,10 @@ struct NotchContentRoot: View {
         }
         if !live.status.isEmpty {
             Button("Live: \(live.status)") {}.disabled(true)
+        }
+        Button(action: { drops.muted.toggle() }) {
+            Label(drops.muted ? "Resume Notices" : "Pause Notices",
+                  systemImage: drops.muted ? "bell.slash" : "")
         }
         Button("Set Gemini API Key…") { promptForGeminiKey() }
         Button("Forget Conversations") { live.forgetConversations() }

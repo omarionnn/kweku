@@ -25,8 +25,16 @@ struct NotchContentRoot: View {
 
     @State private var isTargeted = false
     @State private var hidden = false
-    @State private var mode: NookMode =
-        NookMode(rawValue: UserDefaults.standard.string(forKey: "nookMode") ?? "") ?? .critter
+    @State private var mode: NookMode = {
+        let stored = NookMode(rawValue: UserDefaults.standard.string(forKey: "nookMode") ?? "")
+        // Only a cycleable mode can be resumed. `command` is summoned, never
+        // landed on — and an earlier build that persisted it is exactly how
+        // the notch ended up stuck as a text box across restarts.
+        guard let stored, NookMode.cycle.contains(stored) else { return .critter }
+        return stored
+    }()
+    /// Where to go back to when the summoned command panel closes.
+    @State private var modeBeforeSummon: NookMode?
     /// Last `vm.cycleSteps` value applied, so scroll flips are diffed rather
     /// than counted — a dropped update can't desynchronise the mode.
     @State private var lastCycleStep = 0
@@ -73,6 +81,14 @@ struct NotchContentRoot: View {
     /// `onDisappear`, which hands the keyboard back, which flips the takeover
     /// off again. The summon undid itself in about 20ms.
     private var commandTakeover: Bool { !hidden && mode == .command && vm.wantsKeyboard }
+    /// The one-line invitation under the notch, in the two modes that are a
+    /// resting state rather than something you scrolled to in order to read.
+    /// Weather and stats deliberately don't get it: a text field under a
+    /// number you came to check is noise.
+    private var showCommandPrompt: Bool {
+        !hidden && open && !vm.expanded && !live.running
+            && (mode == .critter || music.isShowing)
+    }
     /// The hover-reveal session list, offered in critter mode as well as its
     /// own mode — it's the thing most worth surfacing when you look at Kweku.
     private var showAgentPanel: Bool {
@@ -136,7 +152,11 @@ struct NotchContentRoot: View {
             updateSize()
         }
         .onChange(of: vm.tapCount) { _ in
-            guard !music.isShowing else { return }
+            // A click that opened the command line is not also a request to
+            // jump to a session. The tap comes from an event monitor with no
+            // idea which view was hit, so the field's own claim is what tells
+            // it to stand down.
+            guard !music.isShowing, !vm.wantsKeyboard else { return }
             // A click on the notch means "take me to whatever wants me" — the
             // session behind the exclamation eyes. Name the reason when there's
             // nothing to open; a click that silently does nothing reads as
@@ -175,8 +195,17 @@ struct NotchContentRoot: View {
             updateSize()
         }
         .onChange(of: live.composing) { creature.setLiveThinking($0) }
+        // Releasing the keyboard ends the summon: hand the notch back to
+        // whatever it was showing before.
+        .onChange(of: vm.wantsKeyboard) { wants in
+            guard !wants, mode == .command else { return }
+            let previous = modeBeforeSummon ?? .critter
+            modeBeforeSummon = nil
+            withAnimation(.spring(response: 0.3, dampingFraction: 0.85)) { mode = previous }
+        }
         .onChange(of: mode) { m in
-            UserDefaults.standard.set(m.rawValue, forKey: "nookMode")
+            // Never persist the summoned mode — resuming into it is the bug.
+            if m != .command { UserDefaults.standard.set(m.rawValue, forKey: "nookMode") }
             // Components that poll only do so while they're the one showing.
             weather.setActive(m == .weather)
             stats.setActive(m == .stats)
@@ -219,33 +248,7 @@ struct NotchContentRoot: View {
             // ⌥Space drops the caret into the notch from whatever app you're
             // in. It switches modes first: summoning a text box that then
             // isn't showing would be worse than no shortcut at all.
-            HotKeyManager.shared.register(.summonCommand) {
-                // A running Live session owns the nook; summoning a field it
-                // would draw over is worse than the shortcut doing nothing.
-                guard !hidden, !live.running else { return }
-                // Read the front app *first*. Claiming the keyboard makes
-                // Kweku's panel key, and after that "the app you were in" is
-                // no longer a question the system can answer.
-                commands.captureContext()
-                // Then activate. A `.nonactivatingPanel` will report itself
-                // key and hold first responder while the window server goes
-                // on delivering every keystroke to the app that was in front —
-                // the panel looked focused and typing went to Finder. Only
-                // becoming the active app actually gets the keys. Kweku is an
-                // accessory with no menu bar, so this costs no visible chrome,
-                // and the front app is handed back on close.
-                NSApp.activate(ignoringOtherApps: true)
-                if mode != .command {
-                    withAnimation(.spring(response: 0.34, dampingFraction: 0.82)) {
-                        mode = .command
-                    }
-                }
-                // Claim the keyboard here rather than inside the panel: while
-                // the island is showing, the panel isn't on screen to claim it
-                // for itself, and the claim is what puts it there.
-                vm.wantsKeyboard = true
-                commandSummon += 1
-            }
+            HotKeyManager.shared.register(.summonCommand) { summonCommand() }
         }
         .contextMenu { menu }
     }
@@ -339,6 +342,14 @@ struct NotchContentRoot: View {
             if showShelf {
                 ShelfView(store: shelf).transition(.opacity)
             }
+            // Last, so it sits on the bottom edge: the thing you reach *down*
+            // to, under whatever you came to read.
+            if showCommandPrompt {
+                CommandPromptStrip(busy: commands.state.isBusy,
+                                   label: commands.state.progressLabel,
+                                   onOpen: summonCommand)
+                    .transition(.opacity)
+            }
         }
     }
 
@@ -351,6 +362,39 @@ struct NotchContentRoot: View {
                 .background(Capsule().fill(Color.black.opacity(0.8)))
                 .transition(.opacity.combined(with: .move(edge: .top)))
         }
+    }
+
+    /// Open the command line: ⌥Space from anywhere, or a click on the prompt.
+    ///
+    /// The mode change is *borrowed*. `modeBeforeSummon` is what the notch goes
+    /// back to when the keyboard is released, so a summon can never leave the
+    /// notch as a text box — which is what it did when this simply set the
+    /// mode and the mode was persisted.
+    private func summonCommand() {
+        // A running Live session owns the nook; summoning a field it would
+        // draw over is worse than the shortcut doing nothing.
+        guard !hidden, !live.running else { return }
+        // Read the front app *first*. Claiming the keyboard makes Kweku's
+        // panel key, and after that "the app you were in" is no longer a
+        // question the system can answer.
+        commands.captureContext()
+        // Then activate. A `.nonactivatingPanel` will report itself key and
+        // hold first responder while the window server goes on delivering
+        // every keystroke to the app that was in front — the panel looked
+        // focused and typing went to Finder. Only becoming the active app
+        // actually gets the keys. Kweku is an accessory with no menu bar, so
+        // this costs no visible chrome, and the front app is handed back on
+        // close.
+        NSApp.activate(ignoringOtherApps: true)
+        if mode != .command {
+            modeBeforeSummon = mode
+            withAnimation(.spring(response: 0.34, dampingFraction: 0.82)) { mode = .command }
+        }
+        // Claim the keyboard here rather than inside the panel: while the
+        // island is showing, the panel isn't on screen to claim it for itself,
+        // and the claim is what puts it there.
+        vm.wantsKeyboard = true
+        commandSummon += 1
     }
 
     private func showToast(_ text: String) {
@@ -407,6 +451,10 @@ struct NotchContentRoot: View {
         }
         if showShelf {
             strips.append(.init(height: shelfPanelHeight, minWidth: shelfPanelWidth))
+        }
+        if showCommandPrompt {
+            strips.append(.init(height: CommandPromptStrip.bodyHeight,
+                                minWidth: CommandPromptStrip.expandedWidth))
         }
         return strips
     }
@@ -490,7 +538,7 @@ struct NotchContentRoot: View {
     @ViewBuilder private var menu: some View {
         // Built from the component list, so a new component appears in the
         // menu and the scroll cycle from the same one-line registration.
-        ForEach(NookMode.allCases, id: \.self) { item in
+        ForEach(NookMode.cycle, id: \.self) { item in
             Button(action: { mode = item }) {
                 Label(item.title, systemImage: mode == item ? "checkmark" : "")
             }

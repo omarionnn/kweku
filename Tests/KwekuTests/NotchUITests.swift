@@ -108,10 +108,11 @@ enum NotchUITests {
     // MARK: Mode cycling
 
     static func modeCycle() {
-        // Written against `allCases` rather than named modes: adding a
-        // component shouldn't mean rewriting the cycling tests, only extending
-        // the list they derive from.
-        let all = NookMode.allCases
+        // Written against `cycle` rather than named modes: adding a component
+        // shouldn't mean rewriting the cycling tests, only extending the list
+        // they derive from. `cycle` and not `allCases`, because a summoned
+        // mode is not somewhere scrolling can land.
+        let all = NookMode.cycle
         let count = all.count
 
         Check.run("modes advance and wrap both ways") {
@@ -131,6 +132,13 @@ enum NotchUITests {
             for mode in NookMode.allCases {
                 Check.ok(NookMode(rawValue: mode.rawValue) == mode, "\(mode.rawValue)")
             }
+        }
+        Check.run("the command line is summoned, never scrolled to") {
+            Check.ok(!NookMode.cycle.contains(.command),
+                     "scrolling must not be able to park the notch on a text box")
+            Check.ok(NookMode.command.advanced(by: 1) == .critter,
+                     "scrolling out of a summoned panel lands somewhere real")
+            Check.ok(NookMode.command.advanced(by: -1) == .critter, "either way")
         }
     }
 

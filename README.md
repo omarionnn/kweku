@@ -52,9 +52,14 @@ notch. Scroll over the notch to cycle what it shows.
   into a coding-agent gateway. `⌥⌘K` toggles it from anywhere; captions hang under
   the notch.
 
-- **Command line.** Type at Kweku instead of talking to it. `⌥Space` from any
-  app grows the panel out of the cutout with the caret already blinking — the
-  critter slides into the right wing as it opens. Chips above the field name
+- **Command line.** Type at Kweku instead of talking to it. It isn't a mode you
+  can scroll to and get stuck in — it's summoned, and the notch goes back to
+  whatever it was showing when you're done. Hovering the critter (or the music
+  island) hangs a one-line `ask Kweku` prompt under the notch; `⌥Space` from any
+  app skips that and grows the full panel out of the cutout with the caret
+  already blinking — the critter slides into the right wing as it opens. Escape,
+  or a click anywhere else, hands the keyboard and the front app back. Chips
+  above the field name
   what it's looking at, whether the screen is riding along, and where ⏎ goes;
   `↑` recalls, a ghost completion finishes the command you ran before, and a
   pasted stack trace grows the field instead of scrolling sideways. An answer

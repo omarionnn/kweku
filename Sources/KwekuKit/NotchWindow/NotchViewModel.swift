@@ -47,6 +47,12 @@ public final class NotchViewModel: ObservableObject {
 
     // MARK: Layout (content -> window)
 
+    /// Content asking for keyboard focus — the command field, and nothing else
+    /// so far. The window is a non-activating panel, so honouring this takes
+    /// key without pulling the app forward; the controller drops it again the
+    /// moment this clears, so the notch is never sitting on the keyboard.
+    @Published public var wantsKeyboard: Bool = false
+
     /// Size the hosted content wants the window to be. The controller sizes
     /// the window to this, pinned to the notch's top edge and centred (unless
     /// mid-slide). Lets the content grow to reveal the shelf without the

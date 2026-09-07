@@ -53,6 +53,25 @@ public final class NotchController {
             }
             .store(in: &cancellables)
 
+        // The content owns *when* the notch needs the keyboard; the window owns
+        // how. Keeping the claim on a published flag means the panel can never
+        // be left holding focus because a view forgot to release it — the flag
+        // going false is the release.
+        model.$wantsKeyboard
+            .removeDuplicates()
+            .sink { [weak self] wants in
+                MainActor.assumeIsolated {
+                    guard let self else { return }
+                    self.window.acceptsKeyboard = wants
+                    // Re-derive hover and mouse transparency, which both now
+                    // depend on the claim. Same trap as `desiredSize` above:
+                    // the model still holds the old value here, so pass the
+                    // payload rather than reading it back.
+                    self.applyState(keyboard: wants)
+                }
+            }
+            .store(in: &cancellables)
+
         recomputeGeometry()
         installEventMonitors()
         installScreenObserver()
@@ -244,9 +263,17 @@ public final class NotchController {
         min(max(x, minX), max(minX, maxX))
     }
 
-    private func applyState() {
-        window.ignoresMouseEvents = machine.ignoresMouseEvents
-        model.isHovering = machine.state == .hovering
+    /// `keyboard` overrides the model's value for callers reacting to a
+    /// `@Published` willSet, where the model hasn't caught up yet.
+    private func applyState(keyboard: Bool? = nil) {
+        let holdingKeyboard = keyboard ?? model.wantsKeyboard
+        // While the notch holds the keyboard it must also stay clickable: the
+        // cursor wanders off a text field constantly, and a panel that went
+        // mouse-transparent the moment it did would leave you typing into
+        // something you could no longer click to correct. For the same reason
+        // it counts as hovered, so the panel doesn't collapse under the caret.
+        window.ignoresMouseEvents = machine.ignoresMouseEvents && !holdingKeyboard
+        model.isHovering = machine.state == .hovering || holdingKeyboard
         model.expanded = machine.state == .dragArmed
         applyWindowSize()
     }

@@ -35,6 +35,32 @@ enum ScreenGlance {
         explain, do not guess, and never describe an error you cannot read.
         """
 
+    /// Read a failure off the screen in enough detail for an agent to act on.
+    ///
+    /// Deliberately greedier than `triagePrompt`, which exists to decide
+    /// whether to speak at all and so wants one line. This one is feeding a
+    /// coding agent that has to reproduce the failure, so the surrounding
+    /// command, file and line numbers matter as much as the message. It keeps
+    /// the same `NONE` escape hatch: a "fix this" that invents a bug to fix is
+    /// worse than one that admits it can't see one.
+    static let fixPrompt = """
+        This is a screenshot of a developer's screen. If it shows an error, a \
+        failed build, a failing test, a crash, or a stack trace, transcribe the \
+        failure exactly as it appears — the error message, and any file paths, \
+        line numbers, test names, or the command that produced it. Quote text \
+        verbatim; do not paraphrase, summarise, or suggest a fix. If no clear \
+        failure is visible, reply with exactly NONE.
+        """
+
+    /// Read whatever is on screen, for a question the user asked in their own
+    /// words. The user's text is appended by the caller.
+    static let readPrompt = """
+        This is a screenshot of the user's screen. Answer their question about \
+        it using only what is actually visible. Quote any error, path, command \
+        or identifier exactly. If the screen does not contain the answer, say \
+        so plainly rather than guessing.
+        """
+
     static let recallPrompt = """
         This is a screenshot from a developer's screen history. In at most two \
         sentences, say what it shows. Quote any error message, URL, or command \

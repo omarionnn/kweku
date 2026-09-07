@@ -20,6 +20,7 @@ struct NotchContentRoot: View {
     @StateObject private var agents = AgentWatchHub()
     @StateObject private var weather = WeatherHub()
     @StateObject private var stats = StatsHub()
+    @StateObject private var commands = CommandHub()
     @StateObject private var live = LiveSessionController()
 
     @State private var isTargeted = false
@@ -82,6 +83,8 @@ struct NotchContentRoot: View {
                 agentStack
             } else if mode == .stats && !hidden {
                 statsStack
+            } else if mode == .command && !hidden {
+                commandStack
             } else {
                 critterStack
             }
@@ -127,7 +130,9 @@ struct NotchContentRoot: View {
         .onChange(of: vm.cycleSteps) { steps in
             let delta = steps - lastCycleStep
             lastCycleStep = steps
-            guard delta != 0, !music.isShowing, !hidden else { return }
+            // Never cycle out from under a caret: a trackpad twitch while
+            // typing would otherwise throw away the half-written command.
+            guard delta != 0, !music.isShowing, !hidden, !vm.wantsKeyboard else { return }
             withAnimation(.spring(response: 0.34, dampingFraction: 0.82)) {
                 mode = mode.advanced(by: delta)
             }
@@ -148,6 +153,10 @@ struct NotchContentRoot: View {
             // Components that poll only do so while they're the one showing.
             weather.setActive(m == .weather)
             stats.setActive(m == .stats)
+            // Leaving command mode gives the keyboard back even if the field
+            // never saw its own teardown.
+            if m != .command, vm.wantsKeyboard { vm.wantsKeyboard = false }
+            syncDraggable()
             updateSize()
         }
         // No `onChange(of: stats.snapshot)`: the stats panel is a fixed size
@@ -160,11 +169,21 @@ struct NotchContentRoot: View {
             if mode == .weather { weather.setActive(true) }
             if mode == .stats { stats.setActive(true) }
             live.ompCwdProvider = { agents.table.focusTarget()?.cwd }
+            // The typed command line routes "fix this" the same way the voice
+            // session does — to the most actionable session's repo.
+            commands.agentCwdProvider = { agents.table.focusTarget()?.cwd }
             live.externalActivity = { id, state in agents.noteExternal(id: id, state: state) }
             // A stalled agent is only visible to someone looking at the panel.
             // When a Live session is open, say it instead — `interject` is a
             // no-op when there isn't one, or when Kweku is already talking.
             agents.onAttention = { prompt in live.interject(prompt) }
+            // ⌥⌘K starts and stops Live from anywhere, so opening a session
+            // doesn't mean finding the notch and right-clicking it first. Same
+            // path as the menu item, key prompt included. The manager ignores a
+            // repeat, so this is safe if the view reappears.
+            HotKeyManager.shared.register(.toggleLive) { [live] in
+                if live.running { live.stop() } else { self.startLive() }
+            }
         }
         .contextMenu { menu }
     }
@@ -212,6 +231,14 @@ struct NotchContentRoot: View {
         VStack(spacing: 0) {
             StatsView(stats: stats, vm: vm, rim: rim)
                 .frame(height: vm.notchSize.height + body(for: .stats))
+            strips
+        }
+    }
+
+    private var commandStack: some View {
+        VStack(spacing: 0) {
+            CommandView(commands: commands, vm: vm, rim: rim)
+                .frame(height: vm.notchSize.height + body(for: .command))
             strips
         }
     }
@@ -276,7 +303,7 @@ struct NotchContentRoot: View {
     /// them — the music island's scrubber, the Live panel's mic meter and
     /// buttons — must never move the window instead of taking the click.
     private func syncDraggable() {
-        let draggable = !music.isShowing && !live.running
+        let draggable = !music.isShowing && !live.running && mode != .command
         if vm.contentDraggable != draggable { vm.contentDraggable = draggable }
     }
 

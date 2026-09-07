@@ -339,34 +339,9 @@ final class ScreenCaptureManager: NSObject, SCStreamDelegate, SCStreamOutput {
 
         // Front-to-back z-order comes from the window server; SCShareableContent
         // makes no ordering promise, so the choice is made here and matched there.
-        var frontID: UInt32?
-        if let info = CGWindowListCopyWindowInfo(.optionOnScreenOnly, kCGNullWindowID) as? [[String: Any]] {
-            var policyCache: [Int32: Bool] = [:]
-            func regular(_ pid: Int32) -> Bool {
-                if let hit = policyCache[pid] { return hit }
-                let isRegular = NSRunningApplication(processIdentifier: pid)?
-                    .activationPolicy == .regular
-                policyCache[pid] = isRegular
-                return isRegular
-            }
-            let windows = info.compactMap { d -> ScreenTargeting.WindowInfo? in
-                guard let id = d[kCGWindowNumber as String] as? UInt32,
-                      let owner = d[kCGWindowOwnerPID as String] as? Int32,
-                      let layer = d[kCGWindowLayer as String] as? Int
-                else { return nil }
-                let bounds = d[kCGWindowBounds as String] as? [String: Any]
-                return ScreenTargeting.WindowInfo(
-                    id: id, pid: owner, layer: layer,
-                    width: CGFloat((bounds?["Width"] as? Double) ?? 0),
-                    height: CGFloat((bounds?["Height"] as? Double) ?? 0),
-                    alpha: CGFloat((d[kCGWindowAlpha as String] as? Double) ?? 1),
-                    regularApp: regular(owner))
-            }
-            frontID = ScreenTargeting.focusedWindowID(
-                windows: windows,
-                frontmostPid: NSWorkspace.shared.frontmostApplication?.processIdentifier,
-                excludingPid: ProcessInfo.processInfo.processIdentifier)
-        }
+        // Shared with `ScreenSnapshot`, so a one-shot read from the notch and
+        // the Live stream always agree on which window is in front.
+        let frontID = ScreenSnapshot.frontmostWindowID()
         Self.dbg("retarget force=\(force) frontID=\(frontID.map(String.init) ?? "nil") current=\(targetWindowID)/\(targetDisplayID)")
         let screenID = (NSScreen.main?.deviceDescription[
             NSDeviceDescriptionKey("NSScreenNumber")] as? NSNumber)

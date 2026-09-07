@@ -9,7 +9,7 @@ import SwiftUI
 /// cost more than the last — the component now declares its own metrics and the
 /// shell just asks.
 public enum NookMode: String, CaseIterable {
-    case critter, weather, agents, stats
+    case critter, weather, agents, stats, command
 
     /// The mode `step` places away, wrapping in both directions.
     public func advanced(by step: Int) -> NookMode {
@@ -26,6 +26,7 @@ public enum NookMode: String, CaseIterable {
         case .weather: return "Weather"
         case .agents:  return "Agents"
         case .stats:   return "System"
+        case .command: return "Command"
         }
     }
 }
@@ -78,6 +79,7 @@ public extension NookMode {
         case .weather: return WeatherView.metrics(context)
         case .agents:  return AgentModeView.metrics(context)
         case .stats:   return StatsView.metrics(context)
+        case .command: return CommandView.metrics(context)
         }
     }
 }

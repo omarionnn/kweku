@@ -83,7 +83,13 @@ public enum ScreenSnapshot {
     }
 
     /// Grab the focused window now.
-    public static func capture() async -> Result<Shot, Failure> {
+    ///
+    /// `pinned` names the window to read instead of resolving the frontmost
+    /// one. The command line summoned with ⌥Space has to activate Kweku to
+    /// receive keystrokes at all, and from that moment "the frontmost window"
+    /// is Kweku's own panel — so the caller pins the window you were actually
+    /// looking at, at the instant you pressed the key.
+    public static func capture(pinned: UInt32? = nil) async -> Result<Shot, Failure> {
         guard ScreenCaptureManager.hasScreenAccess else {
             CGRequestScreenCaptureAccess()
             return .failure(.noPermission)
@@ -91,7 +97,7 @@ public enum ScreenSnapshot {
         guard #available(macOS 14.0, *) else {
             return .failure(.failed("Screen reading needs macOS 14 or later"))
         }
-        guard let windowID = frontmostWindowID() else { return .failure(.noWindow) }
+        guard let windowID = pinned ?? frontmostWindowID() else { return .failure(.noWindow) }
 
         let content: SCShareableContent
         do {

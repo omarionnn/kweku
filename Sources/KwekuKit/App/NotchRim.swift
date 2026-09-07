@@ -1,5 +1,55 @@
 import SwiftUI
 
+/// One agent's share of a segmented rim.
+public struct RimSegment: Equatable, Sendable, Identifiable {
+    public enum State: Equatable, Sendable {
+        case working(AgentActivity)
+        case waiting
+        case idle
+    }
+
+    public var id: String
+    public var state: State
+
+    public init(id: String, state: State) {
+        self.id = id
+        self.state = state
+    }
+}
+
+/// A span of the outline, as a fraction of its length.
+public struct RimArc: Equatable, Sendable {
+    public var start: CGFloat
+    public var length: CGFloat
+
+    public init(start: CGFloat, length: CGFloat) {
+        self.start = start
+        self.length = length
+    }
+}
+
+/// Dividing the outline between several sessions.
+///
+/// Pure, so the arithmetic that decides whether four agents each still get a
+/// readable arc can be checked without a screen.
+public enum RimSegments {
+    /// Gap between neighbouring arcs, as a fraction of the outline. Without
+    /// one, four arcs read as a single unbroken ring.
+    public static let gap: CGFloat = 0.025
+    /// Past this many the arcs are too short to tell apart, and the rim stops
+    /// trying to be a list.
+    public static let maxArcs = 5
+
+    public static func arcs(count: Int, gap: CGFloat = gap) -> [RimArc] {
+        guard count > 0 else { return [] }
+        let shown = min(count, maxArcs)
+        let span = 1 / CGFloat(shown)
+        return (0..<shown).map {
+            RimArc(start: CGFloat($0) * span + gap / 2, length: max(0.015, span - gap))
+        }
+    }
+}
+
 /// What the rim is saying. One style at a time, highest urgency wins — see
 /// `NotchRimStyle.resolve`.
 public enum NotchRimStyle: Equatable {
@@ -15,6 +65,21 @@ public enum NotchRimStyle: Equatable {
     case working(activity: AgentActivity)
     /// A session just flipped to *waiting*: the whole rim pulses amber.
     case attention
+    /// More than one session at once: the outline is divided between them,
+    /// one arc each, each in its own state.
+    ///
+    /// `activity` ranks several working sessions down to a single winner and
+    /// throws the rest away, which is right for one silhouette and wrong for
+    /// the question you actually have with three agents running — how many,
+    /// and is any of them stuck. Waiting arcs blink; working arcs breathe.
+    case sessions([RimSegment])
+    /// Something with a genuinely known extent, 0…1.
+    ///
+    /// Deliberately rare, and never inferred. The aurora exists because
+    /// reasoning has no progress to report and the rim must not pretend it
+    /// does; this is only for things that really do have a measurable end,
+    /// like how long a drop has left before it retracts.
+    case progress(fraction: CGFloat, colour: Color)
     /// Music is playing and the cover has a colour worth wearing. The lowest
     /// priority signal there is — purely ambient, never competing with a state
     /// you need to act on. Resolved by the music island itself rather than
@@ -34,9 +99,16 @@ public enum NotchRimStyle: Equatable {
     /// `speaking` is the audio engine's drain state rather than `voiceLevel`,
     /// which crosses any threshold you pick several times a syllable and would
     /// strobe the rim between two styles.
+    /// `segments` outranks `attention` once there are two or more sessions:
+    /// the segmented rim can say "one of these is waiting" *and* what the
+    /// others are doing, where the amber pulse says only the first half and
+    /// blanks everything else. With a single session the pulse is still the
+    /// better signal, and nothing is lost by it.
     public static func resolve(attention: Bool, live: Bool, speaking: Bool = false,
                                voiceLevel: CGFloat, working: Bool,
-                               activity: AgentActivity? = nil) -> NotchRimStyle {
+                               activity: AgentActivity? = nil,
+                               segments: [RimSegment] = []) -> NotchRimStyle {
+        if segments.count >= 2 { return .sessions(segments) }
         if attention { return .attention }
         if live && speaking { return .live(level: voiceLevel) }
         if working { return .working(activity: activity ?? .thinking) }
@@ -85,9 +157,86 @@ struct NotchRim: View {
             workingRim(activity)
         case .attention:
             attentionRim
+        case .sessions(let segments):
+            sessionsRim(segments)
+        case .progress(let fraction, let colour):
+            progressRim(fraction: fraction, colour: colour)
         case .album(let colour, let playing):
             albumRim(colour: colour, playing: playing)
         }
+    }
+
+    // MARK: - Several sessions at once
+
+    /// One arc per session around the outline, over a hairline that keeps the
+    /// whole silhouette faintly present — so the arcs read as *parts of* the
+    /// rim rather than as free-floating marks.
+    ///
+    /// Waiting and tooling share amber deliberately: they're the same colour
+    /// of urgency, and what separates them is the rhythm. A waiting arc blinks
+    /// at just under a second; a working one breathes over two and a half.
+    private func sessionsRim(_ segments: [RimSegment]) -> some View {
+        let arcs = RimSegments.arcs(count: segments.count)
+        return TimelineView(.animation(minimumInterval: 1.0 / 30.0)) { context in
+            let t = context.date.timeIntervalSinceReferenceDate
+            ZStack {
+                shape.stroke(Color.white.opacity(0.06), lineWidth: 1)
+                ForEach(arcs.indices, id: \.self) { index in
+                    segmentArc(segments[index], arc: arcs[index], at: t)
+                }
+            }
+        }
+        .transition(.opacity)
+    }
+
+    private func segmentArc(_ segment: RimSegment, arc span: RimArc,
+                            at t: TimeInterval) -> some View {
+        let level: CGFloat
+        switch segment.state {
+        case .waiting:
+            level = 0.4 + 0.6 * CGFloat(0.5 + 0.5 * sin(t * 2 * .pi / 0.9))
+        case .working:
+            level = 0.45 + 0.35 * CGFloat(0.5 + 0.5 * sin(t * 2 * .pi / 2.6))
+        case .idle:
+            level = 0.2
+        }
+        let colour = Self.colour(for: segment.state)
+        return ZStack {
+            arc(from: span.start, length: span.length,
+                color: colour.opacity(Double(level) * 0.3), width: 5, blur: 6)
+            arc(from: span.start, length: span.length,
+                color: colour.opacity(Double(level)), width: 2.2, blur: 1.6)
+        }
+    }
+
+    static func colour(for state: RimSegment.State) -> Color {
+        switch state {
+        case .waiting: return amber
+        case .idle:    return .white
+        case .working(let activity):
+            switch activity {
+            case .thinking:   return violet
+            case .tooling:    return amber
+            case .responding: return teal
+            }
+        }
+    }
+
+    // MARK: - Progress
+
+    /// A single arc from the top, filled to `fraction`. No motion of its own —
+    /// the number moving *is* the animation, and anything else on top of it
+    /// would only make a measured thing look busy.
+    private func progressRim(fraction: CGFloat, colour: Color) -> some View {
+        let filled = clamp01(fraction)
+        return ZStack {
+            shape.stroke(colour.opacity(0.09), lineWidth: 1)
+            shape.trim(from: 0, to: filled)
+                .stroke(colour.opacity(0.75),
+                        style: StrokeStyle(lineWidth: 1.8, lineCap: .round))
+                .blur(radius: 1.2)
+        }
+        .transition(.opacity)
     }
 
     // MARK: - Live

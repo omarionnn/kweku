@@ -44,6 +44,16 @@ notch. Scroll over the notch to cycle what it shows.
   Claude) with a per-session identity line, flips the face to "waiting" when one
   needs me, and a "pit crew" reports what each finished agent changed.
 
+- **Drops.** The notch tells me things without being asked. An agent finishes
+  and the notch extends for a couple of seconds with what it *left behind* —
+  `notch · 2 commits · 3 files +140/−12`, read from git, not from the agent —
+  then folds away. The rim carries the countdown so the retraction is never a
+  surprise. It stays quiet when I'm hovering it, typing into it, mid-drag, or
+  in a Live session; several at once queue rather than fight, and past three
+  they collapse into a count. "Pause Notices" in the menu is the off switch —
+  macOS no longer exposes Focus state to an unentitled app, so this is a real
+  switch rather than a guess at one.
+
 - **Spotify island.** Album art on the left, the creature in the right wing —
   music and the critter at once. Hovering opens a full card tinted with an accent
   pulled off the cover; open while agents run and the agent panel stacks below.
@@ -52,8 +62,21 @@ notch. Scroll over the notch to cycle what it shows.
   into a coding-agent gateway. `⌥⌘K` toggles it from anywhere; captions hang under
   the notch.
 
-- **Command line.** Type at Kweku instead of talking to it — a prompt in the
-  notch, a send, and "fix what's on screen."
+- **Command line.** Type at Kweku instead of talking to it. It isn't a mode you
+  can scroll to and get stuck in — it's summoned, and the notch goes back to
+  whatever it was showing when you're done. Hovering the critter (or the music
+  island) hangs a one-line `ask Kweku` prompt under the notch; `⌥Space` from any
+  app skips that and grows the full panel out of the cutout with the caret
+  already blinking — the critter slides into the right wing as it opens. Escape,
+  or a click anywhere else, hands the keyboard and the front app back. Chips
+  above the field name
+  what it's looking at, whether the screen is riding along, and where ⏎ goes;
+  `↑` recalls, a ghost completion finishes the command you ran before, and a
+  pasted stack trace grows the field instead of scrolling sideways. An answer
+  comes with verbs — copy, run again, hand it to the agent in the repo, open
+  the session it became — and a typed command shows up in the agent panel like
+  any other session. "Fix what's on screen" still reads the foreground window
+  and hands the failure to a coding agent.
 
 - **Shelf, weather, stats.** Drag files onto the notch to stash and retrieve them;
   local weather (Open-Meteo + CoreLocation) and a system-stats panel are two more

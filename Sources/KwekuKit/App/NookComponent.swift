@@ -11,9 +11,20 @@ import SwiftUI
 public enum NookMode: String, CaseIterable {
     case critter, weather, agents, stats, command
 
+    /// The modes you can scroll to and pick from the menu.
+    ///
+    /// `command` is deliberately not among them. It is *summoned* — ⌥Space or
+    /// a click on the hover prompt — and restored away again when it gives the
+    /// keyboard back. A mode you can land on is a mode that persists, and a
+    /// notch left sitting as a text box you have to scroll out of is not what
+    /// the notch is for.
+    public static let cycle: [NookMode] = [.critter, .weather, .agents, .stats]
+
     /// The mode `step` places away, wrapping in both directions.
     public func advanced(by step: Int) -> NookMode {
-        let all = NookMode.allCases
+        let all = NookMode.cycle
+        // Scrolling out of a summoned command panel lands on the critter
+        // rather than nowhere.
         guard let index = all.firstIndex(of: self) else { return .critter }
         let n = all.count
         return all[((index + step) % n + n) % n]
@@ -57,9 +68,14 @@ public struct NookMetrics: Equatable {
 public struct NookContext: Equatable {
     /// Sessions in the agent table — the agent panel grows a row each.
     public var agentCount: Int
+    /// Lines the command editor is currently showing. A pasted stack trace
+    /// grows the field, and the panel has to grow under it or the caret ends
+    /// up behind the bottom edge.
+    public var commandLines: Int
 
-    public init(agentCount: Int = 0) {
+    public init(agentCount: Int = 0, commandLines: Int = 1) {
         self.agentCount = agentCount
+        self.commandLines = commandLines
     }
 }
 

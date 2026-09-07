@@ -203,13 +203,13 @@ enum StatsTests {
         Check.run("cycling wraps in both directions and covers every mode") {
             var seen: Set<NookMode> = []
             var mode = NookMode.critter
-            for _ in NookMode.allCases.indices {
+            for _ in NookMode.cycle.indices {
                 seen.insert(mode)
                 mode = mode.advanced(by: 1)
             }
-            Check.ok(seen.count == NookMode.allCases.count, "a full turn visits all of them")
+            Check.ok(seen.count == NookMode.cycle.count, "a full turn visits all of them")
             Check.ok(mode == .critter, "and comes home")
-            Check.ok(NookMode.critter.advanced(by: -1) == NookMode.allCases.last,
+            Check.ok(NookMode.critter.advanced(by: -1) == NookMode.cycle.last,
                      "scrolling back wraps to the end")
         }
     }

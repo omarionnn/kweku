@@ -155,6 +155,13 @@ public final class NotchController {
         global(.leftMouseUp) { [weak self] in self?.handleUp() }
         local(.leftMouseUp) { [weak self] in self?.handleUp() }
 
+        // Clicking into another app dismisses the command field. Global
+        // monitors only see events bound for *other* applications, so a click
+        // on the notch itself can never arrive here and cancel the caret it
+        // was meant to place.
+        global(.leftMouseDown) { [weak self] in self?.dismissKeyboardIfOutside() }
+        global(.rightMouseDown) { [weak self] in self?.dismissKeyboardIfOutside() }
+
         // Scroll over the notch cycles modes. The *local* monitor is the one
         // that matters and needs no permission: while hovering, the overlay
         // stops ignoring mouse events, so it sits under the cursor and macOS
@@ -180,6 +187,23 @@ public final class NotchController {
         }
         let step = cycler.feed(deltaX: event.scrollingDeltaX, deltaY: event.scrollingDeltaY)
         if step != 0 { model.cycleSteps += step }
+    }
+
+    /// Give the keyboard back when a click lands anywhere else.
+    ///
+    /// Escape was the only way out, which is a poor answer for a field that
+    /// took the machine's focus to open — going back to work is the natural
+    /// way to be finished with it. Releasing the claim is all this does; the
+    /// content collapses and hands the front app back off the same flag, the
+    /// way it does for every other release.
+    private func dismissKeyboardIfOutside() {
+        guard model.wantsKeyboard, !cursorInsideNotch() else { return }
+        model.wantsKeyboard = false
+        // Re-derive hover from where the cursor actually is. A click can land
+        // far from the last position the move monitor saw, leaving the hit
+        // state believing it is still hovering — which holds the panel open
+        // after the caret has already gone, so it reads as half-dismissed.
+        if machine.cursorMoved(inside: false) { applyState(keyboard: false) }
     }
 
     private func cursorInsideNotch() -> Bool {

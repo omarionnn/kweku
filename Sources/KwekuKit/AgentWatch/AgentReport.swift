@@ -78,6 +78,26 @@ public enum AgentReport {
         return parts.joined(separator: ", ") + branch
     }
 
+    /// The same facts at a glance, for a line the notch says by itself.
+    ///
+    /// `summary` is written to be spoken and runs to a sentence; this has to
+    /// fit under a cutout and be read in the two seconds it's on screen. Same
+    /// rule though: counts only, and when there's nothing to count it says so
+    /// rather than reaching for a verdict.
+    public static func headline(_ work: Work?) -> String {
+        guard let work, !work.isEmpty else { return "waiting on you" }
+        var parts: [String] = []
+        if !work.commits.isEmpty {
+            parts.append("\(work.commits.count) commit\(work.commits.count == 1 ? "" : "s")")
+        }
+        if work.files > 0 {
+            parts.append("\(work.files) file\(work.files == 1 ? "" : "s") "
+                         + "+\(work.insertions)/−\(work.deletions)")
+        }
+        if work.untracked > 0 { parts.append("\(work.untracked) new") }
+        return parts.joined(separator: " · ")
+    }
+
     /// Openers to rotate between, so a run of reports doesn't read as one
     /// sentence with the numbers swapped out.
     ///

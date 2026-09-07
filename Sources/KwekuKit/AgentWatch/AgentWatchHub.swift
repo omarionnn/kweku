@@ -14,6 +14,7 @@ public final class AgentWatchHub: ObservableObject {
     private let openClaw = OpenClawBridgeManager.shared
     private var externalCleanup: [String: DispatchWorkItem] = [:]
     private var attention = AgentAttention.Ledger()
+    private let handoff = DayHandoffRunner()
     /// When each session was first observed, so a report can say what changed
     /// since — pruned with the table so it can't grow forever.
     private var firstSeen: [String: Date] = [:]
@@ -25,6 +26,13 @@ public final class AgentWatchHub: ObservableObject {
 
     public init() {
         setupDone = setup.allInstalled
+
+        // The day's note lands like any other finished background job: a row in
+        // the panel and the eyes that go with it, cleared after a couple of
+        // minutes. It's a draft waiting to be read, not an alarm.
+        handoff.onFinished = { [weak self] _ in
+            self?.noteExternal(id: "handoff", state: .waiting)
+        }
 
         // Socket dir is guaranteed by ShelfStore's support-dir bootstrap, but
         // be independent of ordering:
@@ -141,6 +149,23 @@ public final class AgentWatchHub: ObservableObject {
         return session.state == .working
     }
 
+    /// Whether this session can be answered from the notch — used to offer the
+    /// reply field only where typing at it would land somewhere real.
+    public func canReply(to session: AgentSession) -> Bool { AgentReply.canReply(to: session) }
+
+    /// Answer a waiting agent: raise its terminal and type the reply into it.
+    /// False when nothing was sent — see `AgentReply.send`.
+    @discardableResult
+    public func reply(_ text: String, to session: AgentSession) async -> Bool {
+        await AgentReply.send(text, to: session)
+    }
+
+    /// Write today's handoff now, whatever the hour — the menu's manual path,
+    /// and the retry when the gateway was down at six.
+    public func writeHandoffNow() {
+        handoff.run(sessions: Array(table.sessions.values))
+    }
+
     /// Feed a synthetic session (OpenClaw / voice dispatches) into the same
     /// table so ember/bang reactions and priority apply uniformly. `waiting`
     /// entries self-clean after 2 minutes.
@@ -173,6 +198,11 @@ public final class AgentWatchHub: ObservableObject {
         // something to say about it.
         for id in table.sessions.keys where firstSeen[id] == nil { firstSeen[id] = now }
         firstSeen = firstSeen.filter { table.sessions[$0.key] != nil }
+
+        // The handoff needs the repos, and a session that ends at noon is gone
+        // from the table long before six — so remember it while it's here.
+        for session in table.sessions.values { handoff.note(cwd: session.cwd) }
+        handoff.tick(now: now)
 
         guard onAttention != nil else { return }
         let (alerts, ledger) = AgentAttention.alerts(

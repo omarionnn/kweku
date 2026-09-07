@@ -223,7 +223,8 @@ struct CommandView: View, NookComponent {
 /// Kweku is an `LSUIElement` with no menu bar, so ⌘V has nothing to dispatch to
 /// — the same bug `EditableTextField` was written to fix for the API-key
 /// prompt. A command line you can't paste an error into would miss the point.
-private struct CommandField: NSViewRepresentable {
+/// (Also the agent panel's reply field — same paste problem, same fix.)
+struct CommandField: NSViewRepresentable {
     @Binding var text: String
     var placeholder: String
     var focused: Bool

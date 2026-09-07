@@ -12,11 +12,18 @@ public final class StatsHub: ObservableObject {
     @Published public private(set) var cpuHistory = StatsHistory()
     @Published public private(set) var memoryHistory = StatsHistory()
     @Published public private(set) var networkHistory = StatsHistory()
+    /// What the coding agents have spent today. The machine's other load.
+    @Published public private(set) var burn = BurnTotals()
 
     /// Fast enough to feel live, slow enough to stay invisible in Activity
     /// Monitor. The rates are per-interval deltas, so this also sets their
     /// resolution.
     private static let interval: TimeInterval = 2
+
+    /// Polls between burn re-reads. Spend moves in turns, not in seconds, and
+    /// each pass touches the filesystem — 30s is far more resolution than a
+    /// running total deserves.
+    private static let burnEvery = 15
 
     /// Ceiling the network sparkline is scaled against, so a 20 MB/s burst and
     /// a 2 KB/s trickle don't render identically. Bytes per second.
@@ -27,6 +34,11 @@ public final class StatsHub: ObservableObject {
     private var lastTicks: CPUTicks?
     private var lastNetwork: (received: UInt64, sent: UInt64)?
     private var lastNetworkAt: Date?
+    private let meter = BurnMeter()
+    private var burnCountdown = 0
+    /// One scan at a time: the meter carries per-file read offsets, and two
+    /// overlapping passes would each advance them past the other's lines.
+    private var burnBusy = false
 
     public init() {}
 
@@ -41,6 +53,7 @@ public final class StatsHub: ObservableObject {
         timer?.invalidate(); timer = nil
         guard on else { return }
 
+        burnCountdown = 0
         poll()
         let timer = Timer(timeInterval: Self.interval, repeats: true) { [weak self] _ in
             MainActor.assumeIsolated { self?.poll() }
@@ -53,6 +66,12 @@ public final class StatsHub: ObservableObject {
     private func poll() {
         var next = snapshot
         let now = Date()
+
+        burnCountdown -= 1
+        if burnCountdown <= 0 {
+            burnCountdown = Self.burnEvery
+            refreshBurn()
+        }
 
         // CPU: ticks are cumulative, so the first poll after enabling only
         // establishes a baseline. Hold the previous value rather than showing
@@ -97,5 +116,22 @@ public final class StatsHub: ObservableObject {
         cpuHistory.push(next.cpuFraction)
         memoryHistory.push(next.memoryFraction)
         networkHistory.push(min(1, (next.networkInPerSec + next.networkOutPerSec) / Self.networkScale))
+    }
+
+    /// Re-read the transcripts off the main thread — the first pass of the day
+    /// walks every session file the agents have written since midnight.
+    private func refreshBurn() {
+        guard !burnBusy else { return }
+        burnBusy = true
+        let meter = self.meter
+        Task.detached(priority: .utility) { [weak self] in
+            let totals = meter.refresh()
+            await self?.apply(burn: totals)
+        }
+    }
+
+    private func apply(burn totals: BurnTotals) {
+        burnBusy = false
+        if totals != burn { burn = totals }
     }
 }

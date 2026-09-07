@@ -78,7 +78,7 @@ struct AgentModeView: View, NookComponent {
                              bottom: expanded ? 22 : 12, style: rim)
                     Group {
                         if expanded {
-                            AnyView(AgentPanelView(agents: agents))
+                            AnyView(AgentPanelView(agents: agents, vm: vm))
                         } else {
                             AnyView(AgentBandView(agents: agents))
                         }
@@ -101,6 +101,7 @@ struct AgentModeView: View, NookComponent {
 /// nothing runs while the panel is off-screen.
 struct AgentPanelView: View {
     @ObservedObject var agents: AgentWatchHub
+    @ObservedObject var vm: NotchViewModel
 
     /// Wide enough that the hover action cluster can appear without squeezing
     /// the repo name into an ellipsis.
@@ -110,6 +111,12 @@ struct AgentPanelView: View {
     /// here rather than per-row because the rows rebuild every second and would
     /// drop their own `@State` hover flag each time.
     @State private var hoveredID: String?
+    /// The row that has turned into a reply field, and what's in it.
+    @State private var replyingID: String?
+    @State private var replyText = ""
+    /// The last send didn't land — the terminal never came forward, so nothing
+    /// was typed. The text is kept so it can be sent again.
+    @State private var replyFailed = false
 
     var body: some View {
         let sessions = agents.table.ordered
@@ -119,7 +126,11 @@ struct AgentPanelView: View {
         TimelineView(.periodic(from: .now, by: 1)) { context in
             VStack(alignment: .leading, spacing: 0) {
                 ForEach(shown, id: \.id) { session in
-                    row(session, now: context.date)
+                    if replyingID == session.id {
+                        replyRow(session)
+                    } else {
+                        row(session, now: context.date)
+                    }
                 }
                 if hidden > 0 {
                     Text("+\(hidden) more")
@@ -132,6 +143,71 @@ struct AgentPanelView: View {
         }
         .padding(.vertical, 7)
         .frame(maxWidth: .infinity, alignment: .leading)
+        // A session can end while its reply field is open. Losing the field
+        // without releasing the keyboard would pin the notch open with nothing
+        // in it to type into.
+        .onChange(of: agents.table) { table in
+            if let id = replyingID, table.sessions[id] == nil { closeReply() }
+        }
+        .onDisappear { closeReply() }
+    }
+
+    // MARK: - Replying
+
+    /// The row, turned into a field. Answering "shall I go ahead?" is worth
+    /// exactly one line of typing, and this is where the question already is.
+    private func replyRow(_ session: AgentSession) -> some View {
+        HStack(spacing: 8) {
+            Image(systemName: "arrowshape.turn.up.left.fill")
+                .font(.system(size: 9, weight: .semibold))
+                .foregroundStyle(replyFailed ? NotchRim.amber : AgentPanelView.ready)
+            CommandField(text: $replyText,
+                         placeholder: replyFailed
+                            ? "\(session.displayName) didn't come forward — try again"
+                            : "reply to \(session.displayName)",
+                         focused: true,
+                         onFocusChange: { vm.wantsKeyboard = $0 },
+                         onSubmit: { send(to: session) },
+                         onCancel: closeReply)
+                .frame(height: 18)
+            action("arrow.up.circle.fill", help: "Send to \(session.displayName)") {
+                send(to: session)
+            }
+            action("xmark", help: "Cancel") { closeReply() }
+        }
+        .padding(.horizontal, 16)
+        .frame(height: AgentPanelFormat.rowHeight)
+        .background(Color.white.opacity(0.05))
+    }
+
+    private func openReply(_ session: AgentSession) {
+        replyText = ""
+        replyFailed = false
+        replyingID = session.id
+        vm.wantsKeyboard = true
+    }
+
+    private func closeReply() {
+        guard replyingID != nil || vm.wantsKeyboard else { return }
+        replyingID = nil
+        replyText = ""
+        replyFailed = false
+        vm.wantsKeyboard = false
+    }
+
+    /// Send, and only close the field if the keystrokes actually went to the
+    /// session's terminal — a reply that silently went nowhere must not look
+    /// like one that was delivered.
+    private func send(to session: AgentSession) {
+        guard !replyText.isEmpty else { return }
+        let text = replyText
+        Task {
+            if await agents.reply(text, to: session) {
+                closeReply()
+            } else {
+                replyFailed = true
+            }
+        }
     }
 
     private func row(_ session: AgentSession, now: Date) -> some View {
@@ -208,6 +284,13 @@ struct AgentPanelView: View {
     @ViewBuilder
     private func actions(for session: AgentSession) -> some View {
         HStack(spacing: 2) {
+            // First, because it's the answer to the question the row is asking.
+            if agents.canReply(to: session) {
+                action("arrowshape.turn.up.left", help: "Reply without leaving the notch",
+                       tint: AgentPanelView.ready) {
+                    openReply(session)
+                }
+            }
             if case .terminal = session.destination {
                 action("arrow.up.forward.app", help: "Focus terminal") {
                     agents.focus(session)

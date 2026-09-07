@@ -16,7 +16,8 @@ struct StatsView: View, NookComponent {
     var rim: NotchRimStyle
 
     static let peek: CGFloat = 30
-    static let expandedBody: CGFloat = 104
+    /// Two meters, the throughput/power footnotes, and the burn line.
+    static let expandedBody: CGFloat = 130
     static let expandedWidth: CGFloat = 320
 
     static func metrics(_ context: NookContext) -> NookMetrics {
@@ -98,8 +99,47 @@ struct StatsView: View, NookComponent {
                 footnote(symbol: "internaldrive", text: StatsSnapshot.bytes(snapshot.diskFreeBytes),
                          unit: "free", tint: .white.opacity(0.6))
             }
+            Divider().overlay(Color.white.opacity(0.08))
+            burnRow
         }
         .padding(.horizontal, 20).padding(.top, 9).padding(.bottom, 10)
+    }
+
+    /// What the agents spent today, next to what the machine is spending.
+    ///
+    /// The other four meters describe a laptop; this one describes the work.
+    /// With three agents running the day's bill is otherwise invisible until
+    /// it's a monthly number, and the split by repo is the part worth seeing —
+    /// it's the only view of *which* agent is eating the day.
+    private var burnRow: some View {
+        let burn = stats.burn
+        return HStack(spacing: 6) {
+            Image(systemName: "bolt.fill")
+                .font(.system(size: 8, weight: .semibold))
+                .foregroundStyle(NotchRim.amber.opacity(burn.tokens > 0 ? 0.9 : 0.3))
+            if burn.tokens == 0 {
+                Text("no agent spend today")
+                    .font(.system(size: 9, weight: .medium))
+                    .foregroundStyle(.white.opacity(0.3))
+            } else {
+                Text(BurnTotals.money(burn.dollars))
+                    .font(.system(size: 11, weight: .bold, design: .rounded))
+                    .foregroundStyle(.white.opacity(0.85))
+                    .monospacedDigit()
+                Text("\(BurnTotals.tokens(burn.tokens)) tok")
+                    .font(.system(size: 8, weight: .medium))
+                    .foregroundStyle(.white.opacity(0.32))
+                    .monospacedDigit()
+                Spacer(minLength: 6)
+                Text(burn.breakdown())
+                    .font(.system(size: 8.5, weight: .medium))
+                    .foregroundStyle(.white.opacity(0.45))
+                    .lineLimit(1).truncationMode(.tail)
+            }
+            Spacer(minLength: 0)
+        }
+        .help("Today's agent spend at list prices, from the omp and Claude Code transcripts")
+        .frame(maxWidth: .infinity, alignment: .leading)
     }
 
     /// One labelled sparkline: title, big number, and the trace under it.

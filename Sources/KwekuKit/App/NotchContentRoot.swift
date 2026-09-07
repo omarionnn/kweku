@@ -266,7 +266,7 @@ struct NotchContentRoot: View {
                 .transition(.opacity)
         } else {
             if showAgentPanel {
-                AgentPanelView(agents: agents).transition(.opacity)
+                AgentPanelView(agents: agents, vm: vm).transition(.opacity)
             }
             if showCaptions {
                 LiveCaptionView(heard: live.heard, spoken: live.caption, level: creature.voiceLevel)
@@ -455,6 +455,9 @@ struct NotchContentRoot: View {
         Button(action: { agents.runSetup() }) {
             Label("Set Up Agent Watch", systemImage: agents.setupDone ? "checkmark" : "")
         }
+        // Fires itself at six; this is the early ask and the retry when the
+        // gateway wasn't up for it.
+        Button("Write Today's Handoff") { agents.writeHandoffNow() }
         Divider()
         Button("Enter licence key…") {}.disabled(true)
         Divider()

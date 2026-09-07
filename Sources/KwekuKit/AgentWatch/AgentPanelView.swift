@@ -161,14 +161,14 @@ struct AgentPanelView: View {
             Image(systemName: "arrowshape.turn.up.left.fill")
                 .font(.system(size: 9, weight: .semibold))
                 .foregroundStyle(replyFailed ? NotchRim.amber : AgentPanelView.ready)
-            CommandField(text: $replyText,
-                         placeholder: replyFailed
-                            ? "\(session.displayName) didn't come forward — try again"
-                            : "reply to \(session.displayName)",
-                         focused: true,
-                         onFocusChange: { vm.wantsKeyboard = $0 },
-                         onSubmit: { send(to: session) },
-                         onCancel: closeReply)
+            AgentReplyField(text: $replyText,
+                            placeholder: replyFailed
+                                ? "\(session.displayName) didn't come forward — try again"
+                                : "reply to \(session.displayName)",
+                            focused: true,
+                            onFocusChange: { vm.wantsKeyboard = $0 },
+                            onSubmit: { send(to: session) },
+                            onCancel: closeReply)
                 .frame(height: 18)
             action("arrow.up.circle.fill", help: "Send to \(session.displayName)") {
                 send(to: session)

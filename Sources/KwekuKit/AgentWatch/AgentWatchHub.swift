@@ -24,6 +24,12 @@ public final class AgentWatchHub: ObservableObject {
     /// Live conversation; leave it nil and the notch stays silent as before.
     public var onAttention: ((String) -> Void)?
 
+    /// The same event, structured, for anything that wants the facts rather
+    /// than a paragraph to speak. The notch's own drops read this: a spoken
+    /// report and a line under the cutout are the same news in two registers,
+    /// and both should come off one read of the working copy rather than two.
+    public var onReports: (([(session: AgentSession, work: AgentReport.Work?)]) -> Void)?
+
     public init() {
         setupDone = setup.allInstalled
 
@@ -204,7 +210,7 @@ public final class AgentWatchHub: ObservableObject {
         for session in table.sessions.values { handoff.note(cwd: session.cwd) }
         handoff.tick(now: now)
 
-        guard onAttention != nil else { return }
+        guard onAttention != nil || onReports != nil else { return }
         let (alerts, ledger) = AgentAttention.alerts(
             sessions: Array(table.sessions.values), ledger: attention, now: now)
         attention = ledger
@@ -218,7 +224,10 @@ public final class AgentWatchHub: ObservableObject {
         }
         Task.detached(priority: .utility) { [weak self] in
             let read = entries.map { ($0.0, AgentReport.read(cwd: $0.0.cwd, since: $0.1)) }
-            await MainActor.run { self?.onAttention?(AgentReport.prompt(for: read, now: now)) }
+            await MainActor.run {
+                self?.onReports?(read)
+                self?.onAttention?(AgentReport.prompt(for: read, now: now))
+            }
         }
     }
 

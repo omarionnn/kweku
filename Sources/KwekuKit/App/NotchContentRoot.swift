@@ -22,17 +22,32 @@ struct NotchContentRoot: View {
     @StateObject private var stats = StatsHub()
     @StateObject private var commands = CommandHub()
     @StateObject private var live = LiveSessionController()
+    @StateObject private var drops = DropHub()
 
     @State private var isTargeted = false
     @State private var hidden = false
-    @State private var mode: NookMode =
-        NookMode(rawValue: UserDefaults.standard.string(forKey: "nookMode") ?? "") ?? .critter
+    @State private var mode: NookMode = {
+        let stored = NookMode(rawValue: UserDefaults.standard.string(forKey: "nookMode") ?? "")
+        // Only a cycleable mode can be resumed. `command` is summoned, never
+        // landed on — and an earlier build that persisted it is exactly how
+        // the notch ended up stuck as a text box across restarts.
+        guard let stored, NookMode.cycle.contains(stored) else { return .critter }
+        return stored
+    }()
+    /// Where to go back to when the summoned command panel closes.
+    @State private var modeBeforeSummon: NookMode?
     /// Last `vm.cycleSteps` value applied, so scroll flips are diffed rather
     /// than counted — a dropped update can't desynchronise the mode.
     @State private var lastCycleStep = 0
     /// Transient confirmation after a drop is dispatched.
     @State private var toast: String?
     @State private var toastWork: DispatchWorkItem?
+    /// Bumped by ⌥Space. The command panel watches it rather than a flag, so
+    /// summoning twice re-focuses the field instead of doing nothing.
+    @State private var commandSummon = 0
+    /// Lines the command editor is showing, reported up by the panel so the
+    /// window grows under a pasted stack trace.
+    @State private var commandLines = 1
 
     private let shelfPanelHeight: CGFloat = 66
     private let shelfPanelWidth: CGFloat = 200
@@ -44,9 +59,37 @@ struct NotchContentRoot: View {
     }
 
     private var open: Bool { vm.isHovering || vm.expanded }
-    private var showShelf: Bool { !hidden && !shelf.items.isEmpty && open && !vm.expanded }
+    /// The shelf hangs under the open notch — except while typing. A strip
+    /// pinned at the panel's full height would float detached under the panel
+    /// as it grows out of the cutout, and a caret is no time to be filing.
+    private var showShelf: Bool {
+        !hidden && !shelf.items.isEmpty && open && !vm.expanded && mode != .command
+    }
     /// A drag is armed: offer the drop destinations instead of the usual body.
     private var showDropTargets: Bool { !hidden && vm.expanded && !music.isShowing }
+    /// The command panel outranks the Spotify island while it holds the
+    /// keyboard.
+    ///
+    /// Without this, ⌥Space is dead for as long as music is playing — the
+    /// island wins the nook, and the field you just summoned is never drawn.
+    /// A caret is like a running Live session: something you are *doing*, and
+    /// it beats something happening in the background.
+    ///
+    /// It gates the *island's* branch rather than adding one of its own. Given
+    /// its own `else if`, `commandStack` would appear at two positions in the
+    /// chain, SwiftUI would read those as two different views, and flipping
+    /// the takeover would tear the panel down and build it again — running
+    /// `onDisappear`, which hands the keyboard back, which flips the takeover
+    /// off again. The summon undid itself in about 20ms.
+    private var commandTakeover: Bool { !hidden && mode == .command && vm.wantsKeyboard }
+    /// The one-line invitation under the notch, in the two modes that are a
+    /// resting state rather than something you scrolled to in order to read.
+    /// Weather and stats deliberately don't get it: a text field under a
+    /// number you came to check is noise.
+    private var showCommandPrompt: Bool {
+        !hidden && open && !vm.expanded && !live.running
+            && (mode == .critter || music.isShowing)
+    }
     /// The hover-reveal session list, offered in critter mode as well as its
     /// own mode — it's the thing most worth surfacing when you look at Kweku.
     private var showAgentPanel: Bool {
@@ -60,14 +103,36 @@ struct NotchContentRoot: View {
         !hidden && live.running && !open && !(live.caption.isEmpty && live.heard.isEmpty)
     }
 
-    /// One ambient signal on the rim at a time, most urgent first.
+    /// One ambient signal on the rim at a time, most urgent first — except
+    /// with several sessions running, where the rim becomes a list of them.
     private var rim: NotchRimStyle {
         NotchRimStyle.resolve(attention: creature.agentWaiting,
                               live: live.running,
                               speaking: live.speaking,
                               voiceLevel: creature.voiceLevel,
                               working: creature.agentWorking,
-                              activity: creature.agentActivity)
+                              activity: creature.agentActivity,
+                              segments: rimSegments)
+    }
+
+    /// An arc per live session, newest activity first — the same order the
+    /// agent panel lists them in, so the rim and the panel agree.
+    private var rimSegments: [RimSegment] {
+        agents.table.ordered.prefix(RimSegments.maxArcs).map { session in
+            let state: RimSegment.State
+            switch session.state {
+            case .waiting: state = .waiting
+            case .working: state = .working(session.activity ?? .thinking)
+            case .idle:    state = .idle
+            }
+            return RimSegment(id: session.id, state: state)
+        }
+    }
+
+    /// Whether the notch may speak on its own right now.
+    private var dropGate: DropGate {
+        DropGate(hidden: hidden, hovering: open, typing: vm.wantsKeyboard,
+                 live: live.running, dragging: vm.expanded, muted: drops.muted)
     }
 
     var body: some View {
@@ -75,7 +140,14 @@ struct NotchContentRoot: View {
             Color.clear
             if live.running && !hidden {
                 liveStack
-            } else if music.isShowing {
+            } else if let drop = drops.current {
+                // Above every mode but a running session: a drop is brief, and
+                // whatever it interrupts is still there two seconds later.
+                DropView(drop: drop, shownAt: drops.shownAt ?? Date(),
+                         presenting: drops.presenting, vm: vm,
+                         onTap: { drops.clear(); summonCommand() })
+                    .frame(height: vm.notchSize.height + DropView.bodyHeight)
+            } else if music.isShowing && !commandTakeover {
                 musicStack
             } else if mode == .weather && !hidden {
                 weatherStack
@@ -110,7 +182,11 @@ struct NotchContentRoot: View {
             updateSize()
         }
         .onChange(of: vm.tapCount) { _ in
-            guard !music.isShowing else { return }
+            // A click that opened the command line is not also a request to
+            // jump to a session. The tap comes from an event monitor with no
+            // idea which view was hit, so the field's own claim is what tells
+            // it to stand down.
+            guard !music.isShowing, !vm.wantsKeyboard else { return }
             // A click on the notch means "take me to whatever wants me" — the
             // session behind the exclamation eyes. Name the reason when there's
             // nothing to open; a click that silently does nothing reads as
@@ -138,6 +214,25 @@ struct NotchContentRoot: View {
             }
         }
         .onChange(of: weather.snapshot) { _ in updateSize() }
+        .onChange(of: commandLines) { _ in updateSize() }
+        .onChange(of: drops.current) { _ in updateSize() }
+        // One place for every reason the notch may or may not speak. A gate
+        // that just opened is also the moment to say whatever was queued
+        // while it was shut.
+        .onChange(of: dropGate) { gate in
+            gate.allows ? drops.pump() : drops.interrupt()
+        }
+        // A command that finished after you dismissed the panel still has an
+        // answer. Saying it is the whole point of drops — otherwise the work
+        // you started is only visible if you happen to look.
+        .onChange(of: commands.state) { state in
+            guard case .result(let text, let ok) = state else { return }
+            drops.post(NotchDrop(id: "command",
+                                 symbol: ok ? "sparkles" : "exclamationmark.triangle",
+                                 title: commands.lastTarget?.label ?? "OpenClaw",
+                                 detail: NotchDrop.firstLine(text),
+                                 tint: ok ? .done : .attention))
+        }
         // The controller clears these on real playback drain, so the strip can
         // mirror them directly — it appears and goes exactly with the audio.
         .onChange(of: live.caption) { _ in updateSize() }
@@ -148,8 +243,17 @@ struct NotchContentRoot: View {
             updateSize()
         }
         .onChange(of: live.composing) { creature.setLiveThinking($0) }
+        // Releasing the keyboard ends the summon: hand the notch back to
+        // whatever it was showing before.
+        .onChange(of: vm.wantsKeyboard) { wants in
+            guard !wants, mode == .command else { return }
+            let previous = modeBeforeSummon ?? .critter
+            modeBeforeSummon = nil
+            withAnimation(.spring(response: 0.3, dampingFraction: 0.85)) { mode = previous }
+        }
         .onChange(of: mode) { m in
-            UserDefaults.standard.set(m.rawValue, forKey: "nookMode")
+            // Never persist the summoned mode — resuming into it is the bug.
+            if m != .command { UserDefaults.standard.set(m.rawValue, forKey: "nookMode") }
             // Components that poll only do so while they're the one showing.
             weather.setActive(m == .weather)
             stats.setActive(m == .stats)
@@ -173,10 +277,30 @@ struct NotchContentRoot: View {
             // session does — to the most actionable session's repo.
             commands.agentCwdProvider = { agents.table.focusTarget()?.cwd }
             live.externalActivity = { id, state in agents.noteExternal(id: id, state: state) }
+            // A command typed at the notch is the same kind of thing as one
+            // spoken at it: same ember, same row in the session list, same
+            // click-to-open. Without this the typed path was the one piece of
+            // work Kweku did that Kweku didn't show.
+            commands.externalActivity = { id, state in agents.noteExternal(id: id, state: state) }
             // A stalled agent is only visible to someone looking at the panel.
             // When a Live session is open, say it instead — `interject` is a
             // no-op when there isn't one, or when Kweku is already talking.
             agents.onAttention = { prompt in live.interject(prompt) }
+            drops.gate = { dropGate }
+            // The same event the pit crew speaks, said under the cutout for
+            // when there's no session to speak into. What the agent left
+            // behind is the news; that it stopped is not.
+            agents.onReports = { entries in
+                for entry in entries {
+                    let work = entry.work
+                    let did = work.map { !$0.isEmpty } ?? false
+                    drops.post(NotchDrop(id: entry.session.id,
+                                         symbol: did ? "checkmark.circle" : "hand.raised",
+                                         title: entry.session.displayName,
+                                         detail: AgentReport.headline(work),
+                                         tint: did ? .done : .attention))
+                }
+            }
             // ⌥⌘K starts and stops Live from anywhere, so opening a session
             // doesn't mean finding the notch and right-clicking it first. Same
             // path as the menu item, key prompt included. The manager ignores a
@@ -184,6 +308,10 @@ struct NotchContentRoot: View {
             HotKeyManager.shared.register(.toggleLive) { [live] in
                 if live.running { live.stop() } else { self.startLive() }
             }
+            // ⌥Space drops the caret into the notch from whatever app you're
+            // in. It switches modes first: summoning a text box that then
+            // isn't showing would be worse than no shortcut at all.
+            HotKeyManager.shared.register(.summonCommand) { summonCommand() }
         }
         .contextMenu { menu }
     }
@@ -237,7 +365,9 @@ struct NotchContentRoot: View {
 
     private var commandStack: some View {
         VStack(spacing: 0) {
-            CommandView(commands: commands, vm: vm, rim: rim)
+            CommandView(commands: commands, vm: vm, critter: creature, rim: rim,
+                        summon: commandSummon, editorLines: $commandLines,
+                        onOpenSession: { agents.focusCurrent() })
                 .frame(height: vm.notchSize.height + body(for: .command))
             strips
         }
@@ -275,6 +405,14 @@ struct NotchContentRoot: View {
             if showShelf {
                 ShelfView(store: shelf).transition(.opacity)
             }
+            // Last, so it sits on the bottom edge: the thing you reach *down*
+            // to, under whatever you came to read.
+            if showCommandPrompt {
+                CommandPromptStrip(busy: commands.state.isBusy,
+                                   label: commands.state.progressLabel,
+                                   onOpen: summonCommand)
+                    .transition(.opacity)
+            }
         }
     }
 
@@ -287,6 +425,39 @@ struct NotchContentRoot: View {
                 .background(Capsule().fill(Color.black.opacity(0.8)))
                 .transition(.opacity.combined(with: .move(edge: .top)))
         }
+    }
+
+    /// Open the command line: ⌥Space from anywhere, or a click on the prompt.
+    ///
+    /// The mode change is *borrowed*. `modeBeforeSummon` is what the notch goes
+    /// back to when the keyboard is released, so a summon can never leave the
+    /// notch as a text box — which is what it did when this simply set the
+    /// mode and the mode was persisted.
+    private func summonCommand() {
+        // A running Live session owns the nook; summoning a field it would
+        // draw over is worse than the shortcut doing nothing.
+        guard !hidden, !live.running else { return }
+        // Read the front app *first*. Claiming the keyboard makes Kweku's
+        // panel key, and after that "the app you were in" is no longer a
+        // question the system can answer.
+        commands.captureContext()
+        // Then activate. A `.nonactivatingPanel` will report itself key and
+        // hold first responder while the window server goes on delivering
+        // every keystroke to the app that was in front — the panel looked
+        // focused and typing went to Finder. Only becoming the active app
+        // actually gets the keys. Kweku is an accessory with no menu bar, so
+        // this costs no visible chrome, and the front app is handed back on
+        // close.
+        NSApp.activate(ignoringOtherApps: true)
+        if mode != .command {
+            modeBeforeSummon = mode
+            withAnimation(.spring(response: 0.34, dampingFraction: 0.82)) { mode = .command }
+        }
+        // Claim the keyboard here rather than inside the panel: while the
+        // island is showing, the panel isn't on screen to claim it for itself,
+        // and the claim is what puts it there.
+        vm.wantsKeyboard = true
+        commandSummon += 1
     }
 
     private func showToast(_ text: String) {
@@ -310,7 +481,9 @@ struct NotchContentRoot: View {
     // MARK: - Sizing
 
     /// The live facts a component's size may depend on.
-    private var nookContext: NookContext { NookContext(agentCount: agents.table.count) }
+    private var nookContext: NookContext {
+        NookContext(agentCount: agents.table.count, commandLines: commandLines)
+    }
 
     /// Body height a mode wants right now, in the current open state.
     private func body(for mode: NookMode) -> CGFloat {
@@ -342,6 +515,10 @@ struct NotchContentRoot: View {
         if showShelf {
             strips.append(.init(height: shelfPanelHeight, minWidth: shelfPanelWidth))
         }
+        if showCommandPrompt {
+            strips.append(.init(height: CommandPromptStrip.bodyHeight,
+                                minWidth: CommandPromptStrip.expandedWidth))
+        }
         return strips
     }
 
@@ -357,7 +534,15 @@ struct NotchContentRoot: View {
             return
         }
 
-        guard !music.isShowing else {
+        // The window has to be at full size before the drop animates, or the
+        // panel is clipped as it grows — the same rule the summon follows.
+        guard drops.current == nil else {
+            vm.desiredSize = CGSize(width: max(base.width, DropView.expandedWidth),
+                                    height: base.height + DropView.bodyHeight)
+            return
+        }
+
+        guard !music.isShowing || commandTakeover else {
             // The island is its own layout: it *contains* the cutout rather
             // than hanging below it, so it doesn't go through NookLayout.
             var width: CGFloat
@@ -424,7 +609,7 @@ struct NotchContentRoot: View {
     @ViewBuilder private var menu: some View {
         // Built from the component list, so a new component appears in the
         // menu and the scroll cycle from the same one-line registration.
-        ForEach(NookMode.allCases, id: \.self) { item in
+        ForEach(NookMode.cycle, id: \.self) { item in
             Button(action: { mode = item }) {
                 Label(item.title, systemImage: mode == item ? "checkmark" : "")
             }
@@ -447,6 +632,10 @@ struct NotchContentRoot: View {
         }
         if !live.status.isEmpty {
             Button("Live: \(live.status)") {}.disabled(true)
+        }
+        Button(action: { drops.muted.toggle() }) {
+            Label(drops.muted ? "Resume Notices" : "Pause Notices",
+                  systemImage: drops.muted ? "bell.slash" : "")
         }
         Button("Set Gemini API Key…") { promptForGeminiKey() }
         Button("Forget Conversations") { live.forgetConversations() }

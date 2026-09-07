@@ -45,7 +45,10 @@ struct WeatherView: View, NookComponent {
 
     // MARK: - Collapsed
 
-    private var collapsedBand: some View {
+    /// Internal, not private: the dashboard shows this as its weather *row*.
+    /// One definition of "weather in one line", used by the component's own
+    /// closed band and by the row, so the two can never drift apart.
+    var collapsedBand: some View {
         HStack(spacing: 7) {
             if let snap = weather.snapshot {
                 WeatherSceneView(scene: snap.scene, animated: false)
@@ -63,7 +66,9 @@ struct WeatherView: View, NookComponent {
 
     // MARK: - Expanded
 
-    private var expandedPanel: some View {
+    /// Internal for the same reason: an enlarged dashboard row *is* this
+    /// panel, not a reduced copy of it.
+    var expandedPanel: some View {
         HStack(spacing: 14) {
             WeatherSceneView(scene: weather.snapshot?.scene ?? .cloudy, animated: true)
                 .frame(width: 64, height: 64)

@@ -83,18 +83,17 @@ struct NotchContentRoot: View {
     /// off again. The summon undid itself in about 20ms.
     private var commandTakeover: Bool { !hidden && mode == .command && vm.wantsKeyboard }
     /// The one-line invitation under the notch, in the two modes that are a
-    /// resting state rather than something you scrolled to in order to read.
-    /// Weather and stats deliberately don't get it: a text field under a
-    /// number you came to check is noise.
+    /// Only under the music island now: the dashboard has the prompt as its
+    /// own last row, and the island is the one open state that isn't the
+    /// dashboard.
     private var showCommandPrompt: Bool {
-        !hidden && open && !vm.expanded && !live.running
-            && (mode == .critter || music.isShowing)
+        !hidden && open && !vm.expanded && !live.running && music.isShowing
     }
-    /// The hover-reveal session list, offered in critter mode as well as its
-    /// own mode — it's the thing most worth surfacing when you look at Kweku.
+    /// Only under the music island now. The dashboard carries agents as one of
+    /// its own rows, so hanging the same list underneath it would be the same
+    /// sessions twice.
     private var showAgentPanel: Bool {
-        !hidden && open && !vm.expanded && agents.table.count > 0
-            && (mode == .critter || music.isShowing)
+        !hidden && open && !vm.expanded && agents.table.count > 0 && music.isShowing
     }
     /// The caption strip is the *collapsed* session's transcript. Expanded, the
     /// Live panel carries the same two lines itself, so showing both would be
@@ -149,16 +148,14 @@ struct NotchContentRoot: View {
                     .frame(height: vm.notchSize.height + DropView.bodyHeight)
             } else if music.isShowing && !commandTakeover {
                 musicStack
-            } else if mode == .weather && !hidden {
-                weatherStack
-            } else if mode == .agents && !hidden {
-                agentStack
-            } else if mode == .stats && !hidden {
-                statsStack
             } else if mode == .command && !hidden {
                 commandStack
             } else {
-                critterStack
+                // Everything at once. `mode` still does the choosing, but it
+                // now chooses which row is *enlarged* rather than which
+                // component exists — so scrolling, the menu and the persisted
+                // preference all keep working unchanged.
+                dashboardStack
             }
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
@@ -169,6 +166,16 @@ struct NotchContentRoot: View {
         }
         .onChange(of: isTargeted) { creature.setMouth(open: $0 ? 1 : 0) }
         .onChange(of: vm.isHovering) { _ in updateSize() }
+        // Weather and system sample the network and the kernel, and their hubs
+        // were written to poll only while their mode was showing. Every
+        // component is showing now, so the condition becomes whether the notch
+        // is open at all — which is strictly less polling than before, since
+        // the old selected mode polled whether or not you were looking at it.
+        .onChange(of: open) { isOpen in
+            weather.setActive(isOpen)
+            stats.setActive(isOpen)
+            syncDraggable()
+        }
         .onChange(of: vm.expanded) { _ in updateSize() }
         .onChange(of: vm.notchSize) { _ in updateSize() }
         .onChange(of: shelf.items.count) { _ in updateSize() }
@@ -255,8 +262,9 @@ struct NotchContentRoot: View {
             // Never persist the summoned mode — resuming into it is the bug.
             if m != .command { UserDefaults.standard.set(m.rawValue, forKey: "nookMode") }
             // Components that poll only do so while they're the one showing.
-            weather.setActive(m == .weather)
-            stats.setActive(m == .stats)
+            // Polling no longer follows the selected mode — everything is on
+            // at once, so it follows whether anyone is *looking*. See the
+            // `open` handler; this only has to react to the row choice.
             // Leaving command mode gives the keyboard back even if the field
             // never saw its own teardown.
             if m != .command, vm.wantsKeyboard { vm.wantsKeyboard = false }
@@ -270,8 +278,8 @@ struct NotchContentRoot: View {
         .onAppear {
             syncDraggable(); updateSize(); creature.apply(sensors.snapshot)
             lastCycleStep = vm.cycleSteps
-            if mode == .weather { weather.setActive(true) }
-            if mode == .stats { stats.setActive(true) }
+            weather.setActive(open)
+            stats.setActive(open)
             live.ompCwdProvider = { agents.table.focusTarget()?.cwd }
             // The typed command line routes "fix this" the same way the voice
             // session does — to the most actionable session's repo.
@@ -318,27 +326,16 @@ struct NotchContentRoot: View {
 
     // MARK: - Mode stacks
 
-    private var critterStack: some View {
+    /// The nook: the face, and under it every component as one line with the
+    /// pointed-at one unfolded. Replaces the four separate mode stacks — the
+    /// components are all still themselves, they just no longer take turns.
+    private var dashboardStack: some View {
         VStack(spacing: 0) {
-            CreatureView(state: creature, vm: vm, rim: rim)
-                .frame(height: vm.notchSize.height + CreatureView.peek)
+            DashboardView(critter: creature, vm: vm, weather: weather, agents: agents,
+                          stats: stats, commands: commands, rim: rim,
+                          enlarged: $mode, onSummonCommand: summonCommand)
+                .frame(height: vm.notchSize.height + dashboardBody)
                 .opacity(hidden ? 0 : 1)
-            strips
-        }
-    }
-
-    private var weatherStack: some View {
-        VStack(spacing: 0) {
-            WeatherView(weather: weather, vm: vm, rim: rim)
-                .frame(height: vm.notchSize.height + weatherBody)
-            strips
-        }
-    }
-
-    private var agentStack: some View {
-        VStack(spacing: 0) {
-            AgentModeView(agents: agents, vm: vm, rim: rim)
-                .frame(height: vm.notchSize.height + agentModeBody)
             strips
         }
     }
@@ -351,14 +348,6 @@ struct NotchContentRoot: View {
         VStack(spacing: 0) {
             LiveModeView(live: live, audio: live.audio, vm: vm, rim: rim)
                 .frame(height: vm.notchSize.height + liveBody)
-            strips
-        }
-    }
-
-    private var statsStack: some View {
-        VStack(spacing: 0) {
-            StatsView(stats: stats, vm: vm, rim: rim)
-                .frame(height: vm.notchSize.height + body(for: .stats))
             strips
         }
     }
@@ -474,7 +463,10 @@ struct NotchContentRoot: View {
     /// them — the music island's scrubber, the Live panel's mic meter and
     /// buttons — must never move the window instead of taking the click.
     private func syncDraggable() {
-        let draggable = !music.isShowing && !live.running && mode != .command
+        // Closed, the notch is still a creature you can shove along the menu
+        // bar. Open, it's a panel of hover targets, and a drag that moved the
+        // window instead of picking a row would be maddening.
+        let draggable = !music.isShowing && !live.running && mode != .command && !open
         if vm.contentDraggable != draggable { vm.contentDraggable = draggable }
     }
 
@@ -485,13 +477,19 @@ struct NotchContentRoot: View {
         NookContext(agentCount: agents.table.count, commandLines: commandLines)
     }
 
-    /// Body height a mode wants right now, in the current open state.
+    /// Body height a mode wants right now, in the current open state. Only the
+    /// summoned command panel still sizes itself this way; everything else is
+    /// a dashboard row.
     private func body(for mode: NookMode) -> CGFloat {
         mode.metrics(nookContext).body(open: open)
     }
 
-    private var weatherBody: CGFloat { body(for: .weather) }
-    private var agentModeBody: CGFloat { body(for: .agents) }
+    /// The dashboard's own body: one line per component, plus whichever one
+    /// `mode` has enlarged.
+    private var dashboardBody: CGFloat {
+        open ? DashboardLayout.openBody(enlarged: mode, agentCount: agents.table.count)
+             : DashboardLayout.closedBody
+    }
     private var musicBody: CGFloat { open ? NowPlayingView.expandedBody : NowPlayingView.lip }
     private var liveMetrics: NookMetrics { LiveModeView.metrics(nookContext) }
     private var liveBody: CGFloat { liveMetrics.body(open: open) }
@@ -563,8 +561,21 @@ struct NotchContentRoot: View {
             return
         }
 
-        vm.desiredSize = NookLayout.size(base: base, mode: mode, open: open,
-                                         context: nookContext, strips: stripMetrics)
+        guard mode != .command else {
+            vm.desiredSize = NookLayout.size(base: base, mode: .command, open: open,
+                                             context: nookContext, strips: stripMetrics)
+            return
+        }
+
+        // The dashboard is its own layout: every component is on at once, so
+        // there is no single mode's metrics to ask.
+        var width = open ? max(base.width, DashboardLayout.width) : base.width
+        var height = base.height + dashboardBody
+        for strip in stripMetrics {
+            width = max(width, strip.minWidth)
+            height += strip.height
+        }
+        vm.desiredSize = CGSize(width: width, height: height)
     }
 
     /// Small modal for the manual-city fallback (spec: CoreLocation with a

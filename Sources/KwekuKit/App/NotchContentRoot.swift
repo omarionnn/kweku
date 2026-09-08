@@ -23,6 +23,7 @@ struct NotchContentRoot: View {
     @StateObject private var commands = CommandHub()
     @StateObject private var live = LiveSessionController()
     @StateObject private var drops = DropHub()
+    @StateObject private var field = FieldHub()
 
     @State private var isTargeted = false
     @State private var hidden = false
@@ -135,6 +136,19 @@ struct NotchContentRoot: View {
                  live: live.running, dragging: vm.expanded, muted: drops.muted)
     }
 
+    /// Whether Kweku may draw outside the cutout. Far fewer reasons to say no
+    /// than `dropGate` has, and deliberately so — see `FieldGate`. It shares
+    /// the drops' mute switch rather than adding a second one: "pause notices"
+    /// means all of them, wherever they're drawn.
+    private var fieldGate: FieldGate {
+        FieldGate(hidden: hidden, muted: drops.muted)
+    }
+
+    /// Sessions that have stopped and need Omari. The edge glow's only input.
+    private var owedSessions: Int {
+        agents.table.ordered.reduce(into: 0) { $0 += ($1.state == .waiting ? 1 : 0) }
+    }
+
     var body: some View {
         ZStack(alignment: .top) {
             Color.clear
@@ -222,6 +236,12 @@ struct NotchContentRoot: View {
         .onChange(of: dropGate) { gate in
             gate.allows ? drops.pump() : drops.interrupt()
         }
+        // The border owed to a stalled agent. Driven off the session table
+        // directly rather than off `creature.agentWaiting`, which is a ten
+        // second flash meant to be *noticed* — this is the part that has to
+        // still be true twenty minutes later.
+        .onChange(of: owedSessions) { field.report(owed: $0) }
+        .onChange(of: fieldGate) { _ in field.refresh() }
         // A command that finished after you dismissed the panel still has an
         // answer. Saying it is the whole point of drops — otherwise the work
         // you started is only visible if you happen to look.
@@ -287,6 +307,10 @@ struct NotchContentRoot: View {
             // no-op when there isn't one, or when Kweku is already talking.
             agents.onAttention = { prompt in live.interject(prompt) }
             drops.gate = { dropGate }
+            field.gate = { fieldGate }
+            // A relaunch while something is already stuck should come back to
+            // a lit border, not wait for the next state change to notice.
+            field.report(owed: owedSessions)
             // The same event the pit crew speaks, said under the cutout for
             // when there's no session to speak into. What the agent left
             // behind is the news; that it stopped is not.

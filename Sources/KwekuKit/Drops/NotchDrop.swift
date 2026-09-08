@@ -18,6 +18,18 @@ public struct NotchDrop: Equatable, Identifiable, Sendable {
         case neutral
     }
 
+    /// How the line is drawn.
+    ///
+    /// Almost everything the notch says is a symbol and two lines, and that
+    /// uniformity is worth protecting — a notice that looks like a different
+    /// piece of software every time is noise. A `kind` is earned only when the
+    /// content has a shape of its own that plain text loses: a video has a
+    /// picture, and the picture is most of what tells you whether you care.
+    public enum Kind: Equatable, Sendable {
+        case line
+        case youtube
+    }
+
     /// Dedupe key, normally the session id. A session that speaks twice before
     /// it has been shown replaces itself rather than queueing twice — three
     /// events from one agent is one thing you need to know, not three.
@@ -27,15 +39,26 @@ public struct NotchDrop: Equatable, Identifiable, Sendable {
     public var detail: String
     public var tint: Tint
     public var dwell: TimeInterval
+    public var kind: Kind
+    /// Picture to draw, already warmed into a cache by whoever posted this.
+    /// A URL rather than an image because a drop is `Sendable` and `NSImage`
+    /// is not.
+    public var artURL: URL?
+    /// Where a click goes. Nil falls back to opening the notch itself.
+    public var link: URL?
 
     public init(id: String, symbol: String, title: String, detail: String,
-                tint: Tint, dwell: TimeInterval? = nil) {
+                tint: Tint, dwell: TimeInterval? = nil, kind: Kind = .line,
+                artURL: URL? = nil, link: URL? = nil) {
         self.id = id
         self.symbol = symbol
         self.title = title
         self.detail = detail
         self.tint = tint
         self.dwell = dwell ?? NotchDrop.dwell(for: detail)
+        self.kind = kind
+        self.artURL = artURL
+        self.link = link
     }
 
     /// How long a line should hang there, from how much there is to read.

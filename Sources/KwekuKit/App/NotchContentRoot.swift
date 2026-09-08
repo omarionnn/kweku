@@ -23,6 +23,7 @@ struct NotchContentRoot: View {
     @StateObject private var commands = CommandHub()
     @StateObject private var live = LiveSessionController()
     @StateObject private var drops = DropHub()
+    @StateObject private var youtube = YouTubeHub()
 
     @State private var isTargeted = false
     @State private var hidden = false
@@ -143,10 +144,17 @@ struct NotchContentRoot: View {
             } else if let drop = drops.current {
                 // Above every mode but a running session: a drop is brief, and
                 // whatever it interrupts is still there two seconds later.
-                DropView(drop: drop, shownAt: drops.shownAt ?? Date(),
-                         presenting: drops.presenting, vm: vm,
-                         onTap: { drops.clear(); summonCommand() })
-                    .frame(height: vm.notchSize.height + DropView.bodyHeight)
+                if drop.kind == .youtube {
+                    YouTubeDropView(drop: drop, shownAt: drops.shownAt ?? Date(),
+                                    presenting: drops.presenting, vm: vm,
+                                    onTap: { openDropLink(drop) })
+                        .frame(height: vm.notchSize.height + YouTubeDropView.bodyHeight)
+                } else {
+                    DropView(drop: drop, shownAt: drops.shownAt ?? Date(),
+                             presenting: drops.presenting, vm: vm,
+                             onTap: { drops.clear(); summonCommand() })
+                        .frame(height: vm.notchSize.height + DropView.bodyHeight)
+                }
             } else if music.isShowing && !commandTakeover {
                 musicStack
             } else if mode == .weather && !hidden {
@@ -301,6 +309,28 @@ struct NotchContentRoot: View {
                                          tint: did ? .done : .attention))
                 }
             }
+            // A channel you starred put something up. The thumbnail is fetched
+            // before the drop is posted, never during it: the notch is open
+            // for five seconds and an image arriving on second three lands
+            // after the moment it was meant to serve.
+            youtube.onUpload = { upload in
+                Task {
+                    await YouTubeThumbnails.prefetch(upload.thumbnailURL)
+                    drops.post(NotchDrop(id: "yt:\(upload.id)",
+                                         symbol: "play.rectangle.fill",
+                                         title: upload.channelTitle,
+                                         detail: upload.title,
+                                         tint: .neutral,
+                                         // The longest dwell of any drop: this
+                                         // one has a picture to look at as well
+                                         // as a line to read.
+                                         dwell: 5.0,
+                                         kind: .youtube,
+                                         artURL: upload.thumbnailURL,
+                                         link: upload.watchURL))
+                }
+            }
+            youtube.start()
             // ⌥⌘K starts and stops Live from anywhere, so opening a session
             // doesn't mean finding the notch and right-clicking it first. Same
             // path as the menu item, key prompt included. The manager ignores a
@@ -536,9 +566,13 @@ struct NotchContentRoot: View {
 
         // The window has to be at full size before the drop animates, or the
         // panel is clipped as it grows — the same rule the summon follows.
-        guard drops.current == nil else {
-            vm.desiredSize = CGSize(width: max(base.width, DropView.expandedWidth),
-                                    height: base.height + DropView.bodyHeight)
+        if let drop = drops.current {
+            let width = drop.kind == .youtube
+                ? YouTubeDropView.expandedWidth : DropView.expandedWidth
+            let body = drop.kind == .youtube
+                ? YouTubeDropView.bodyHeight : DropView.bodyHeight
+            vm.desiredSize = CGSize(width: max(base.width, width),
+                                    height: base.height + body)
             return
         }
 
@@ -606,6 +640,110 @@ struct NotchContentRoot: View {
         if !key.isEmpty { LiveSessionController.storeAPIKey(key) }
     }
 
+    // MARK: - YouTube
+
+    /// Starring lives in the menu rather than a settings window because it is
+    /// the only setting here that you change while thinking about a *channel* —
+    /// usually right after one of its notices, with the notch under the cursor.
+    @ViewBuilder private var youtubeMenu: some View {
+        if youtube.isConnected {
+            let starred = youtube.store.starredChannels.count
+            Menu("YouTube Channels (\(starred) starred)") {
+                if youtube.store.channels.isEmpty {
+                    Button("No subscriptions synced yet") {}.disabled(true)
+                }
+                // Starred first, then alphabetical: the list you maintain sits
+                // at the top instead of scattered through everything you have
+                // ever subscribed to.
+                ForEach(sortedChannels, id: \.id) { channel in
+                    Button(action: { youtube.setStarred(!channel.starred, for: channel.id) }) {
+                        Label(channel.title, systemImage: channel.starred ? "checkmark" : "")
+                    }
+                }
+            }
+            // A drop is never requeued — the gate closing means you are already
+            // looking at the notch, and re-saying it would be talking over
+            // yourself. That is right for an agent, whose state the panel still
+            // holds, but a video announced while you were typing would
+            // otherwise be gone with no record anywhere. This is that record.
+            if !youtube.store.recent.isEmpty {
+                Menu("Recent Uploads") {
+                    ForEach(youtube.store.recent.prefix(12), id: \.id) { upload in
+                        Button("\(upload.channelTitle) — \(upload.title)") {
+                            guard let url = upload.watchURL else { return }
+                            NSWorkspace.shared.open(url)
+                        }
+                    }
+                }
+            }
+            Button("Sync Subscriptions Now") { Task { await youtube.syncSubscriptions() } }
+            Button("Disconnect YouTube", role: .destructive) { youtube.disconnect() }
+        } else {
+            Button("Connect YouTube…") { connectYouTube() }
+        }
+        if let error = youtube.lastError {
+            Button("YouTube: \(error)") {}.disabled(true)
+        }
+    }
+
+    private var sortedChannels: [YouTubeChannel] {
+        youtube.store.channels.sorted {
+            $0.starred == $1.starred
+                ? $0.title.localizedCaseInsensitiveCompare($1.title) == .orderedAscending
+                : $0.starred
+        }
+    }
+
+    private func connectYouTube() {
+        if !youtube.store.hasClient { promptForYouTubeClient() }
+        guard youtube.store.hasClient else { return }
+        Task { await youtube.connect() }
+    }
+
+    /// Ask for the OAuth client once.
+    ///
+    /// There is no way around this: "my subscriptions" is private user data,
+    /// so Google requires an OAuth client, and it will not issue one to an app
+    /// it hasn't met. The client id and secret are not really secrets for an
+    /// installed app — RFC 8252 says as much, which is why the flow uses PKCE
+    /// — but they are still yours, and they stay on this machine.
+    private func promptForYouTubeClient() {
+        let alert = NSAlert()
+        alert.messageText = "Connect YouTube"
+        alert.informativeText = """
+            Create an OAuth client at console.cloud.google.com → APIs & Services \
+            → Credentials → Create credentials → OAuth client ID → Desktop app, \
+            with the YouTube Data API v3 enabled. Paste its ID and secret below.
+
+            Used only to read which channels you're subscribed to. Stored in app \
+            preferences; revoke any time at myaccount.google.com/permissions.
+            """
+        let container = NSView(frame: NSRect(x: 0, y: 0, width: 320, height: 54))
+        let idField = EditableTextField(frame: NSRect(x: 0, y: 30, width: 320, height: 24))
+        idField.placeholderString = "Client ID (…apps.googleusercontent.com)"
+        let secretField = EditableSecureTextField(frame: NSRect(x: 0, y: 0, width: 320, height: 24))
+        secretField.placeholderString = "Client secret (GOCSPX-…)"
+        container.addSubview(idField)
+        container.addSubview(secretField)
+        alert.accessoryView = container
+        alert.addButton(withTitle: "Continue")
+        alert.addButton(withTitle: "Cancel")
+        NSApp.activate(ignoringOtherApps: true)
+        guard alert.runModal() == .alertFirstButtonReturn else { return }
+        let id = idField.stringValue.trimmingCharacters(in: .whitespaces)
+        let secret = secretField.stringValue.trimmingCharacters(in: .whitespaces)
+        guard !id.isEmpty, !secret.isEmpty else { return }
+        youtube.store.storeClient(id: id, secret: secret)
+    }
+
+    /// A drop with somewhere to go. Clicking a video opens the video — the
+    /// notch behind it has nothing more to say about it than the line did.
+    private func openDropLink(_ drop: NotchDrop) {
+        drops.clear()
+        guard let link = drop.link else { return }
+        NSWorkspace.shared.open(link)
+    }
+
     @ViewBuilder private var menu: some View {
         // Built from the component list, so a new component appears in the
         // menu and the scroll cycle from the same one-line registration.
@@ -640,6 +778,8 @@ struct NotchContentRoot: View {
         Button("Set Gemini API Key…") { promptForGeminiKey() }
         Button("Forget Conversations") { live.forgetConversations() }
         Button("Forget Screen History") { live.forgetScreenHistory() }
+        Divider()
+        youtubeMenu
         Divider()
         Button(action: { agents.runSetup() }) {
             Label("Set Up Agent Watch", systemImage: agents.setupDone ? "checkmark" : "")

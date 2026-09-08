@@ -129,6 +129,27 @@ struct NotchContentRoot: View {
         }
     }
 
+    /// Sessions that have stopped and need Omari — the tab's only input.
+    ///
+    /// Read off the session table rather than off `creature.agentWaiting`,
+    /// which is a ten-second flash meant to be caught. This is the part that
+    /// has to still be true twenty minutes later.
+    private var owedSessions: Int {
+        agents.table.ordered.reduce(into: 0) { $0 += ($1.state == .waiting ? 1 : 0) }
+    }
+
+    /// Whether the tab hangs under the notch right now.
+    ///
+    /// Every reason it doesn't is a reason the debt is already on screen in
+    /// better detail: the panel is open and listing the sessions, a drop is
+    /// using that exact space to say what happened, or a Live session is about
+    /// to say it out loud. Plus the same explicit mute the drops obey — "pause
+    /// notices" means all of them.
+    private var showTab: Bool {
+        !hidden && owedSessions > 0 && !open && drops.current == nil
+            && !live.running && !vm.wantsKeyboard && !drops.muted
+    }
+
     /// Whether the notch may speak on its own right now.
     private var dropGate: DropGate {
         DropGate(hidden: hidden, hovering: open, typing: vm.wantsKeyboard,
@@ -222,6 +243,9 @@ struct NotchContentRoot: View {
         .onChange(of: dropGate) { gate in
             gate.allows ? drops.pump() : drops.interrupt()
         }
+        // Muting doesn't only stop the next line — it takes the tab down with
+        // it, and the notch has to shrink by the height the tab was claiming.
+        .onChange(of: drops.muted) { _ in updateSize() }
         // A command that finished after you dismissed the panel still has an
         // answer. Saying it is the whole point of drops — otherwise the work
         // you started is only visible if you happen to look.
@@ -413,6 +437,9 @@ struct NotchContentRoot: View {
                                    onOpen: summonCommand)
                     .transition(.opacity)
             }
+            if showTab {
+                NotchTabView(sessions: owedSessions)
+            }
         }
     }
 
@@ -518,6 +545,13 @@ struct NotchContentRoot: View {
         if showCommandPrompt {
             strips.append(.init(height: CommandPromptStrip.bodyHeight,
                                 minWidth: CommandPromptStrip.expandedWidth))
+        }
+        // Last, and it never widens the notch: the tab is the one strip that
+        // shows while the notch is *shut*, so it has to be the bottom edge of
+        // a closed notch rather than a row inside an open one.
+        if showTab {
+            strips.append(.init(height: NotchTabView.bodyHeight,
+                                minWidth: NotchTabView.expandedWidth))
         }
         return strips
     }

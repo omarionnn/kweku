@@ -74,45 +74,11 @@ public enum AgentReply {
         try? await Task.sleep(nanoseconds: UInt64(focusSettle * 1_000_000_000))
         guard NSWorkspace.shared.frontmostApplication?.processIdentifier == appPid else { return false }
 
-        type(text)
+        Keystrokes.type(text)
         // A beat before Return: TUIs redraw on input, and submitting inside
         // that redraw is how half a line ends up in the prompt.
         try? await Task.sleep(nanoseconds: 80_000_000)
-        pressReturn()
+        Keystrokes.pressReturn()
         return true
-    }
-
-    /// UTF-16 units per synthesised event. `keyboardSetUnicodeString` is a
-    /// fixed-size buffer in practice, so long replies go in chunks rather than
-    /// being quietly clipped.
-    private static let chunk = 16
-
-    /// Type text as unicode payloads rather than key codes — the reply is
-    /// whatever he typed, and mapping that back onto a keyboard layout would
-    /// break on the first non-US character.
-    private static func type(_ text: String) {
-        let source = CGEventSource(stateID: .combinedSessionState)
-        var units = Array(text.utf16)
-        var index = 0
-        while index < units.count {
-            let slice = Array(units[index..<min(index + chunk, units.count)])
-            for down in [true, false] {
-                guard let event = CGEvent(keyboardEventSource: source, virtualKey: 0, keyDown: down)
-                else { continue }
-                var buffer = slice
-                event.keyboardSetUnicodeString(stringLength: buffer.count, unicodeString: &buffer)
-                event.post(tap: .cghidEventTap)
-            }
-            index += chunk
-        }
-        units.removeAll()
-    }
-
-    /// Virtual key 36 — a real Return, because an agent's prompt is listening
-    /// for the key, not for a newline character in a paste.
-    private static func pressReturn() {
-        let source = CGEventSource(stateID: .combinedSessionState)
-        CGEvent(keyboardEventSource: source, virtualKey: 36, keyDown: true)?.post(tap: .cghidEventTap)
-        CGEvent(keyboardEventSource: source, virtualKey: 36, keyDown: false)?.post(tap: .cghidEventTap)
     }
 }

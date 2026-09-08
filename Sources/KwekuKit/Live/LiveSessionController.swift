@@ -67,6 +67,10 @@ public final class LiveSessionController: ObservableObject {
     /// Cooldown state for unsolicited triage.
     private var triage = TriageTrigger.State()
 
+    /// Omari's own details, read from disk at launch. Only the field *names*
+    /// ever reach the model; `fillField` resolves values locally.
+    private let profile = PersonalProfile()
+
     // A+B memory: rolling local transcript + session-resumption handle.
     private var memory = ConversationMemory()
     private var resumeHandle: String?
@@ -321,6 +325,28 @@ public final class LiveSessionController: ObservableObject {
             + "\(ScreenTimeline.relative(from: best.at, to: now)) actually showed:\n\(seen)"
     }
 
+    /// Answer a `fill_field` tool call by typing a saved detail into the field
+    /// Omari has focused.
+    ///
+    /// The value is read here and typed here; what goes back to the model is
+    /// only whether it landed. Echoing the filled text into the tool response
+    /// would put his email in the transcript and hand it to the very model the
+    /// profile is kept away from — so a success says which field, not what.
+    @MainActor
+    private func fillField(_ args: [String: String]) -> String {
+        guard let field = args["field"], !field.isEmpty else {
+            return "No field was named, so nothing was typed."
+        }
+        let replacing = (args["replace_existing"] ?? "").lowercased() == "true"
+        switch FieldFill.fill(label: field, from: profile, replacing: replacing) {
+        case .filled(let key):
+            return "Typed his \(key.replacingOccurrences(of: "_", with: " ")) into the focused "
+                + "field. Confirm it landed and move on; do not read the value back."
+        case .refused(let refusal):
+            return "Not typed. Tell him: \(refusal.spoken)"
+        }
+    }
+
     /// Connect (or reconnect) the Gemini socket. `fresh` starts a new
     /// conversation seeded with the memory recap; a reconnect passes the
     /// resumption handle so the server restores the same session.
@@ -333,7 +359,8 @@ public final class LiveSessionController: ObservableObject {
         connectedWithVision = canSee
         let system = GeminiLiveProtocol.systemInstruction(
             visionAvailable: canSee,
-            visionIssue: canSee ? nil : ScreenCaptureManager.permissionIssue)
+            visionIssue: canSee ? nil : ScreenCaptureManager.permissionIssue,
+            profileFields: profile.knownKeys)
             + (memory.recap() ?? "")
         client.connect(apiKey: key, model: Self.model,
                        system: system,
@@ -414,6 +441,8 @@ public final class LiveSessionController: ObservableObject {
                     output = await self?.dispatchToOpenClaw(args) ?? "Kweku went away mid-task."
                 case "recall_screen":
                     output = await self?.recallScreen(args) ?? "The screen timeline is unavailable."
+                case "fill_field":
+                    output = await self?.fillField(args) ?? "Kweku went away mid-task."
                 default:
                     output = "unknown tool \(name)"
                 }

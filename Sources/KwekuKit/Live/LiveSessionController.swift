@@ -67,6 +67,13 @@ public final class LiveSessionController: ObservableObject {
     /// Cooldown state for unsolicited triage.
     private var triage = TriageTrigger.State()
 
+    /// Cooldown state for unsolicited offers to fill in a form, and the timer
+    /// that goes looking for one. Separate from triage's state on purpose: a
+    /// build that just broke and a signup page he just opened are not competing
+    /// for the same silence, and sharing a cooldown would let one mute the other.
+    private var formWatch = FormWatch.State()
+    private var formTimer: Timer?
+
     /// Omari's own details, read from disk at launch. Only the field *names*
     /// ever reach the model; `fillField` resolves values locally.
     private let profile = PersonalProfile()
@@ -187,6 +194,7 @@ public final class LiveSessionController: ObservableObject {
             }
         }
         screen.startStreaming { [weak self] jpeg in self?.client.sendVideoFrame(jpeg) }
+        startWatchingForForms()
 
         running = true
         startedAt = Date()
@@ -209,6 +217,8 @@ public final class LiveSessionController: ObservableObject {
     private func stop(keepingReason: Bool) {
         guard running else { return }
         pendingVisionNote = nil
+        formTimer?.invalidate()
+        formTimer = nil
         screen.stop()
         audio.stop()
         client.disconnect()
@@ -299,6 +309,53 @@ public final class LiveSessionController: ObservableObject {
                 _ = self?.interject(TriageTrigger.prompt(app: app, evidence: finding))
             }
         }
+    }
+
+    /// Start looking for a form he could be handed.
+    ///
+    /// Nothing here needs the camera: the offer is decided from the
+    /// Accessibility tree, so it still works in a session that opened blind,
+    /// and it costs no frames and no tokens until there is something to say.
+    private func startWatchingForForms() {
+        formTimer?.invalidate()
+        guard FormWatch.enabled, !profile.isEmpty else { return }
+        let timer = Timer(timeInterval: FormScan.pollInterval, repeats: true) { [weak self] _ in
+            MainActor.assumeIsolated { self?.lookForForm() }
+        }
+        // `.common`, so the search doesn't stall while a menu is open — the
+        // right-click menu is one of the ways he gets here in the first place.
+        RunLoop.main.add(timer, forMode: .common)
+        formTimer = timer
+    }
+
+    /// One pass: read the window in front of him, decide, and maybe speak.
+    ///
+    /// The cheap guards are checked here rather than inside the scan so that a
+    /// session where Kweku is mid-sentence costs nothing at all — the common
+    /// case for this timer is having no work to do.
+    private func lookForForm() {
+        guard running, !speaking, !composing else { return }
+        let holding = Set(profile.knownKeys)
+        guard !holding.isEmpty else { return }
+        // Accessibility reads block, and a window can hold a few hundred of
+        // them. Off the main thread, where they can't judder the notch; only
+        // the verdict comes back, so nothing thread-hostile crosses over.
+        DispatchQueue.global(qos: .utility).async { [weak self] in
+            guard let form = FormScan.frontmost(holding: holding) else { return }
+            DispatchQueue.main.async {
+                MainActor.assumeIsolated { self?.offerToFill(form) }
+            }
+        }
+    }
+
+    @MainActor
+    private func offerToFill(_ form: FormScan.Form) {
+        let (fire, next) = FormWatch.evaluate(
+            form: form, state: formWatch, now: Date(),
+            sessionLive: running, busy: speaking || composing)
+        formWatch = next
+        guard fire else { return }
+        _ = interject(FormWatch.prompt(form: form))
     }
 
     /// Answer a `recall_screen` tool call from the local timeline.

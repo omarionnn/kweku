@@ -223,7 +223,10 @@ public final class AgentWatchHub: ObservableObject {
             return (session, firstSeen[alert.sessionID] ?? session.stateSince)
         }
         Task.detached(priority: .utility) { [weak self] in
-            let read = entries.map { ($0.0, AgentReport.read(cwd: $0.0.cwd, since: $0.1)) }
+            let read = entries.map {
+                ($0.0, AgentReport.read(cwd: $0.0.cwd, since: $0.1,
+                                        transcriptPath: $0.0.transcriptPath))
+            }
             await MainActor.run {
                 self?.onReports?(read)
                 self?.onAttention?(AgentReport.prompt(for: read, now: now))

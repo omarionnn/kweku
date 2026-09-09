@@ -22,13 +22,30 @@ public enum AgentReport {
         /// Commit subjects made since the session was first seen, newest first.
         public var commits: [String]
         public var branch: String?
+        /// Paths the session touched, committed or not. Counts say how much
+        /// changed; these say *where*, which is the difference between "3
+        /// files" and "it was in the reply gate again".
+        public var paths: [String]
+        /// The session's own last words, when a transcript could be found.
+        ///
+        /// Held apart from every other field on purpose. Everything else here
+        /// is git — checkable, and not the agent talking. This is the agent
+        /// talking, and it is the only field that can be wrong on purpose, so
+        /// nothing may merge it into the evidence.
+        public var said: String?
 
         public init(files: Int = 0, insertions: Int = 0, deletions: Int = 0,
-                    untracked: Int = 0, commits: [String] = [], branch: String? = nil) {
+                    untracked: Int = 0, commits: [String] = [], branch: String? = nil,
+                    paths: [String] = [], said: String? = nil) {
             self.files = files; self.insertions = insertions; self.deletions = deletions
             self.untracked = untracked; self.commits = commits; self.branch = branch
+            self.paths = paths; self.said = said
         }
 
+        /// No evidence of work. Deliberately ignores `said`: an agent that
+        /// changed nothing and wrote a paragraph about it has still done
+        /// nothing, and "it says it refactored the parser" over an empty diff
+        /// is the exact announcement this file exists to prevent.
         public var isEmpty: Bool { files == 0 && untracked == 0 && commits.isEmpty }
     }
 
@@ -53,10 +70,27 @@ public enum AgentReport {
         return (number(before: "file"), number(before: "insertion"), number(before: "deletion"))
     }
 
+    /// The touched files, named, for a line that gets spoken.
+    ///
+    /// Bare file names, not paths: "AgentReport.swift" is what he calls it,
+    /// and `Sources/KwekuKit/AgentWatch/AgentReport.swift` read aloud is
+    /// twelve wasted syllables. Capped, because the whole point of naming
+    /// files is that a short list is more informative than a count, and a
+    /// long one is less.
+    public static func names(_ paths: [String], limit: Int = 4) -> String? {
+        guard !paths.isEmpty else { return nil }
+        let shown = paths.prefix(limit).map { ($0 as NSString).lastPathComponent }
+        let rest = paths.count - shown.count
+        let list = shown.joined(separator: ", ")
+        return rest > 0 ? "\(list) and \(rest) more" : list
+    }
+
     /// One clause of plain fact, or nil when there is nothing to report.
     ///
-    /// Reads as evidence rather than praise: counts and commit subjects only.
-    /// "Finished successfully" is not something a diff can tell you.
+    /// Reads as evidence rather than praise: counts, commit subjects and the
+    /// names of the files touched. "Finished successfully" is not something a
+    /// diff can tell you, and neither is `Work.said` — which is why this never
+    /// reads it, even though it is right there on the struct.
     public static func summary(_ work: Work) -> String? {
         guard !work.isEmpty else { return nil }
         var parts: [String] = []
@@ -74,6 +108,7 @@ public enum AgentReport {
         if work.untracked > 0 {
             parts.append("added \(work.untracked) new file\(work.untracked == 1 ? "" : "s")")
         }
+        if let touched = names(work.paths) { parts.append("in \(touched)") }
         let branch = work.branch.map { " on branch \($0)" } ?? ""
         return parts.joined(separator: ", ") + branch
     }
@@ -140,8 +175,14 @@ public enum AgentReport {
             let place = entry.session.displayName
             let did = summary(entry.work ?? Work())
                 ?? "no file changes it could find in that folder"
+            // Two sources, never spliced. The git clause is checkable; the
+            // claim is the agent's own account, and it is labelled as such
+            // right here so the model cannot mistake it for a finding.
+            let claim = entry.work?.said.map {
+                " Its own closing words — its claim, not evidence: “\($0)”"
+            } ?? ""
             return "- The \(entry.session.sourceLabel) session in \(place) stopped \(howLong) "
-                + "and is waiting on him. What it did, read from git: \(did)."
+                + "and is waiting on him. What it did, read from git: \(did).\(claim)"
         }.joined(separator: "\n")
 
         let opener = openers[openerIndex(lines + "\(Int(now.timeIntervalSince1970))",
@@ -154,15 +195,22 @@ public enum AgentReport {
             \(lines)
 
             Address him by name and report it in one or two short spoken \
-            sentences: which project, and what the agent actually changed. \
-            Open with something like "\(opener)" — but vary the wording and \
-            lead with the change itself, not with a preamble. These arrive \
-            several times a day and must not read like the same sentence \
-            every time. Use only the facts above — do not invent files, \
-            commits, test results, or whether the work was any good, and do \
-            not claim it succeeded or fixed anything. You are reporting a \
-            diff, not a verdict. Do not offer to do anything further unless \
-            he asks.
+            sentences: which project, what the agent says it was doing, and \
+            what actually changed on disk. Open with something like \
+            "\(opener)" — but vary the wording and lead with the change \
+            itself, not with a preamble. These arrive several times a day and \
+            must not read like the same sentence every time.
+
+            Use only the facts above — do not invent files, commits, test \
+            results, or whether the work was any good, and do not claim it \
+            succeeded or fixed anything. Where a line gives the agent's own \
+            closing words, you may pass on what it was working on, but say \
+            whose account it is ("it says…", "by its own account…") and never \
+            state it as something you checked. The git clause is the check: if \
+            the agent claims work the diff doesn't show, say that plainly — \
+            that mismatch is the single most useful thing you can tell him. \
+            You are reporting a diff, not a verdict. Do not offer to do \
+            anything further unless he asks.
             """
     }
 
@@ -194,10 +242,111 @@ public enum AgentReport {
         }
     }
 
+    /// Every path the session touched: the uncommitted diff plus the files
+    /// named by the commits it made. Deduplicated, diff order first.
+    ///
+    /// A count answers "how much"; this answers "where", and where is what
+    /// makes a report worth hearing — "3 files" could be anything, "in
+    /// ReplyGate.swift" is news.
+    static func touchedPaths(cwd: String, since: Date, hasCommits: Bool) -> [String] {
+        var seen = Set<String>()
+        var paths: [String] = []
+        func add(_ raw: String?) {
+            for line in (raw ?? "").split(separator: "\n") {
+                let path = line.trimmingCharacters(in: .whitespaces)
+                guard !path.isEmpty, seen.insert(path).inserted else { continue }
+                paths.append(path)
+            }
+        }
+        add(git(["diff", "--name-only", hasCommits ? "HEAD" : emptyTree], cwd: cwd))
+        if hasCommits {
+            let formatter = ISO8601DateFormatter()
+            // `--pretty=format:` prints an empty subject line per commit, so
+            // the output is paths interleaved with blanks — which `add` drops.
+            add(git(["log", "--since=\(formatter.string(from: since))", "-n", "5",
+                     "--name-only", "--pretty=format:"], cwd: cwd))
+        }
+        return paths
+    }
+
+    /// The session's own last words, from its transcript.
+    ///
+    /// Claude Code hands Kweku a `transcript_path` on every hook and the
+    /// installed hook forwards it verbatim, so this costs nothing to obtain —
+    /// the file is already named by the event that triggered the report. The
+    /// last assistant message in it is the agent's account of what it just
+    /// built, which is the one thing git can never supply: intent.
+    ///
+    /// Read as a bounded tail, never whole. These transcripts run to hundreds
+    /// of megabytes by evening — one per turn, forever — and reading one to
+    /// find its last line would stall the report for the length of the day.
+    public static func lastWords(transcriptPath: String, tail: Int = 512 * 1024) -> String? {
+        guard !transcriptPath.isEmpty,
+              let handle = FileHandle(forReadingAtPath: transcriptPath) else { return nil }
+        defer { try? handle.close() }
+        guard let end = try? handle.seekToEnd() else { return nil }
+        let start = end > UInt64(tail) ? end - UInt64(tail) : 0
+        guard (try? handle.seek(toOffset: start)) != nil,
+              let data = try? handle.readToEnd(),
+              let text = String(data: data, encoding: .utf8) else { return nil }
+
+        // The first line is a fragment when the file was longer than the tail.
+        var lines = text.split(separator: "\n", omittingEmptySubsequences: true).map(String.init)
+        if start > 0, !lines.isEmpty { lines.removeFirst() }
+
+        // A turn that ends in a tool call is not a sign-off — the agent was
+        // still working, and its text there is a lead-in ("Now the tests:").
+        // The account of the work is the last *text-only* turn. Mixed turns
+        // are kept as a fallback for sessions killed mid-flight, where a
+        // lead-in really is the last thing that was said.
+        var leadIn: String?
+        for line in lines.reversed() {
+            guard let object = try? JSONSerialization.jsonObject(
+                    with: Data(line.utf8)) as? [String: Any],
+                  object["type"] as? String == "assistant",
+                  let message = object["message"] as? [String: Any],
+                  let blocks = message["content"] as? [[String: Any]] else { continue }
+            let spoken = blocks
+                .filter { $0["type"] as? String == "text" }
+                .compactMap { $0["text"] as? String }
+                .joined()
+            guard let condensed = condense(spoken) else { continue }
+            if !blocks.contains(where: { $0["type"] as? String == "tool_use" }) {
+                return condensed
+            }
+            if leadIn == nil { leadIn = condensed }
+        }
+        return leadIn
+    }
+
+    /// A transcript's closing message down to something speakable: the opening
+    /// prose, flattened, capped. Agents sign off with headings, bullets and
+    /// code fences; none of that survives being read aloud.
+    static func condense(_ raw: String, limit: Int = 220) -> String? {
+        let flattened = raw
+            .replacingOccurrences(of: "`", with: "")
+            .replacingOccurrences(of: "*", with: "")
+            .replacingOccurrences(of: "#", with: "")
+            .split(whereSeparator: \.isNewline)
+            .map { $0.trimmingCharacters(in: .whitespaces) }
+            .filter { !$0.isEmpty }
+            .joined(separator: " ")
+            .trimmingCharacters(in: .whitespaces)
+        guard flattened.count > 1 else { return nil }
+        guard flattened.count > limit else { return flattened }
+        // Cut on a word, not mid-syllable.
+        let clipped = flattened.prefix(limit)
+        let cut = clipped.lastIndex(of: " ").map { clipped[..<$0] } ?? clipped
+        return String(cut) + "…"
+    }
+
     /// Read what happened in `cwd` since `since`. Nil when it isn't a git
     /// working tree — plenty of agent sessions run somewhere that isn't a repo,
     /// and that is a reason to stay quiet, not to guess.
-    public static func read(cwd: String, since: Date) -> Work? {
+    ///
+    /// `transcriptPath` is optional and separate: sessions from harnesses that
+    /// don't publish one still get a full git report, just without the claim.
+    public static func read(cwd: String, since: Date, transcriptPath: String? = nil) -> Work? {
         guard !cwd.isEmpty,
               git(["rev-parse", "--is-inside-work-tree"], cwd: cwd)?
                 .trimmingCharacters(in: .whitespacesAndNewlines) == "true"
@@ -224,7 +373,9 @@ public enum AgentReport {
 
         return Work(files: stat.files, insertions: stat.insertions, deletions: stat.deletions,
                     untracked: untracked, commits: commits,
-                    branch: (branch?.isEmpty == false) ? branch : nil)
+                    branch: (branch?.isEmpty == false) ? branch : nil,
+                    paths: touchedPaths(cwd: cwd, since: since, hasCommits: hasCommits),
+                    said: transcriptPath.flatMap { lastWords(transcriptPath: $0) })
     }
 
     /// Run one git command, or nil if it fails for any reason.

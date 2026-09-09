@@ -120,6 +120,30 @@ enum AgentWatchTests {
             let sub = AgentEvent.parse(#"{"session_id":"abc","cwd":"/y","hook_event_name":"SubagentStop","pid":9}"#)
             Check.ok(sub?.state == .working, "SubagentStop -> parent still working")
         }
+        Check.run("the transcript path rides in on the hook and sticks to the session") {
+            // Claude puts `transcript_path` on every hook and our hook command
+            // forwards the payload verbatim, so this was already arriving —
+            // it was just being dropped on the floor by the parser.
+            let stop = AgentEvent.parse(
+                #"{"session_id":"a","cwd":"/y","hook_event_name":"Stop","pid":9,"transcript_path":"/t/a.jsonl"}"#)
+            Check.ok(stop?.transcriptPath == "/t/a.jsonl", "read off the hook payload")
+            let native = AgentEvent.parse(
+                #"{"session_id":"a","cwd":"/x","pid":7,"state":"waiting","transcript_path":"/t/b.jsonl"}"#)
+            Check.ok(native?.transcriptPath == "/t/b.jsonl", "accepted on the native line too")
+            Check.ok(AgentEvent.parse(
+                #"{"session_id":"a","cwd":"/y","hook_event_name":"Stop","pid":9}"#)?
+                    .transcriptPath == nil, "absent when the harness doesn't publish one")
+
+            // The report is built well after the event that triggered it, so
+            // the path has to survive on the session — including across the
+            // later events that don't carry it.
+            var table = AgentSessionTable()
+            table.apply(AgentEvent.parse(
+                #"{"session_id":"a","cwd":"/y","hook_event_name":"SessionStart","pid":9,"transcript_path":"/t/a.jsonl"}"#)!)
+            table.apply(AgentEvent(sessionID: "a", cwd: "/y", pid: 9, state: .waiting))
+            Check.ok(table.sessions["a"]?.transcriptPath == "/t/a.jsonl",
+                     "a later event without the field doesn't erase it")
+        }
         Check.run("claude tool hooks carry the turn's phase") {
             let ask = AgentEvent.parse(
                 #"{"session_id":"a","cwd":"/y","hook_event_name":"UserPromptSubmit","pid":9}"#)

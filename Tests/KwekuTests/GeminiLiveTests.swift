@@ -23,6 +23,10 @@ enum GeminiLiveTests {
             Check.ok(setup?["model"] as? String == "models/test-live", "model")
             let gen = setup?["generationConfig"] as? [String: Any]
             Check.ok((gen?["responseModalities"] as? [String]) == ["AUDIO"], "AUDIO modality")
+            // Unpinned, the server hands out a different voice per session.
+            let speech = gen?["speechConfig"] as? [String: Any]
+            let prebuilt = (speech?["voiceConfig"] as? [String: Any])?["prebuiltVoiceConfig"] as? [String: Any]
+            Check.ok(prebuilt?["voiceName"] as? String == GeminiLiveProtocol.voiceName, "voice pinned")
             let tools = (setup?["tools"] as? [[String: Any]]) ?? []
             Check.ok(tools.count == 2, "two tool groups")
             let fns = (tools.first?["functionDeclarations"] as? [[String: Any]]) ?? []

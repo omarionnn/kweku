@@ -77,6 +77,14 @@ enum SpotifyController {
     static func setShuffling(_ on: Bool) { run("set shuffling to \(on)") }
     static func setRepeating(_ on: Bool) { run("set repeating to \(on)") }
 
+    /// Bring Spotify forward on this track's page. The track id is already a
+    /// `spotify:track:…` URI, which both navigates and activates the app.
+    static func openTrack(_ trackID: String) {
+        guard isRunning(), trackID.hasPrefix("spotify:"),
+              let url = URL(string: trackID) else { return }
+        NSWorkspace.shared.open(url)
+    }
+
     /// AppleScript silently clamps out-of-range volumes on some builds and
     /// errors on others; do it here so the behaviour is ours.
     static func clampVolume(_ percent: Int) -> Int { min(100, max(0, percent)) }

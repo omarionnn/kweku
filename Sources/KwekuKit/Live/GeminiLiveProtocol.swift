@@ -22,6 +22,15 @@ public enum GeminiServerEvent: Equatable, Sendable {
 public enum GeminiLiveProtocol {
 
     public static let defaultModel = "models/gemini-2.5-flash-native-audio-preview-12-2025"
+
+    /// Kweku's speaking voice. Without an explicit `speechConfig` the server
+    /// picks a default per session, so the voice changes from one connect to
+    /// the next — pinning it is what keeps him sounding like one person.
+    /// Override without a rebuild:
+    /// `defaults write com.omari.Kweku liveVoice Puck`.
+    public static var voiceName: String {
+        UserDefaults.standard.string(forKey: "liveVoice") ?? "Charon"
+    }
     public static let endpointBase =
         "wss://generativelanguage.googleapis.com/ws/google.ai.generativelanguage.v1beta.GenerativeService.BidiGenerateContent"
 
@@ -150,7 +159,12 @@ public enum GeminiLiveProtocol {
         let frame: [String: Any] = [
             "setup": [
                 "model": model,
-                "generationConfig": ["responseModalities": ["AUDIO"]],
+                "generationConfig": [
+                    "responseModalities": ["AUDIO"],
+                    "speechConfig": [
+                        "voiceConfig": ["prebuiltVoiceConfig": ["voiceName": voiceName]],
+                    ],
+                ],
                 "systemInstruction": ["parts": [["text": system]]],
                 // Ask for periodic resumption handles so a dropped/limited
                 // connection can continue the same conversation.

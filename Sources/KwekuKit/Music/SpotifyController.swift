@@ -77,12 +77,36 @@ enum SpotifyController {
     static func setShuffling(_ on: Bool) { run("set shuffling to \(on)") }
     static func setRepeating(_ on: Bool) { run("set repeating to \(on)") }
 
-    /// Bring Spotify forward on this track's page. The track id is already a
-    /// `spotify:track:…` URI, which both navigates and activates the app.
+    /// Bring Spotify forward on this track's page.
+    ///
+    /// The URI navigates but does not reliably *raise* the app. Kweku is an
+    /// `LSUIElement` living in a `.nonactivatingPanel`, so it is never the
+    /// active application, and macOS declines to pull an already-running
+    /// handler in front of whatever you are really working in on its behalf.
+    /// The URL lands, Spotify changes page behind your windows, and from the
+    /// front it looks like the click did nothing.
+    ///
+    /// So ask twice: `activates` covers the case where Spotify had to be
+    /// launched, and the explicit activation covers the far more common one
+    /// where it was already running. Raising happens after the open completes,
+    /// so the app is on the right page before it comes forward rather than
+    /// flashing the previous track on the way.
     static func openTrack(_ trackID: String) {
         guard isRunning(), trackID.hasPrefix("spotify:"),
               let url = URL(string: trackID) else { return }
-        NSWorkspace.shared.open(url)
+
+        let configuration = NSWorkspace.OpenConfiguration()
+        configuration.activates = true
+        NSWorkspace.shared.open(url, configuration: configuration) { _, _ in
+            DispatchQueue.main.async { raise() }
+        }
+    }
+
+    /// Pull the running Spotify in front of everything else.
+    static func raise() {
+        NSWorkspace.shared.runningApplications
+            .first { $0.bundleIdentifier == bundleID }?
+            .activate(options: [.activateAllWindows])
     }
 
     /// AppleScript silently clamps out-of-range volumes on some builds and

@@ -139,6 +139,9 @@ public final class MusicHub: ObservableObject {
     public func next() { SpotifyController.next() }
     public func previous() { SpotifyController.previous() }
 
+    /// Open the current track's page in the Spotify app.
+    public func openInSpotify() { SpotifyController.openTrack(now.trackID) }
+
     public func seek(toFraction fraction: Double) {
         let seconds = max(0, min(1, fraction)) * now.durationSec
         SpotifyController.seek(toSeconds: seconds)

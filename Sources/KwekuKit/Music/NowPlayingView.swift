@@ -129,9 +129,13 @@ struct NowPlayingView: View {
                 VStack(alignment: .leading, spacing: 2) {
                     // Track names run long ("… (feat. X) - Remastered 2011"),
                     // so the title scrolls instead of being cut off.
-                    Marquee(text: music.now.title, active: expanded)
-                        .font(.system(size: 13, weight: .semibold))
-                        .foregroundStyle(.white)
+                    Button { music.openInSpotify() } label: {
+                        Marquee(text: music.now.title, active: expanded)
+                            .font(.system(size: 13, weight: .semibold))
+                            .foregroundStyle(.white)
+                            .contentShape(Rectangle())
+                    }
+                    .buttonStyle(.plain)
                     Text(music.now.artist)
                         .font(.system(size: 11))
                         .foregroundStyle(.white.opacity(0.6))
@@ -280,20 +284,24 @@ struct NowPlayingView: View {
     // MARK: Artwork
 
     @ViewBuilder private func artwork(side: CGFloat) -> some View {
-        Group {
-            if let image = music.artwork {
-                Image(nsImage: image).resizable().aspectRatio(contentMode: .fill)
-            } else {
-                ZStack {
-                    Color.white.opacity(0.1)
-                    Image(systemName: "music.note")
-                        .font(.system(size: side * 0.42))
-                        .foregroundStyle(.white.opacity(0.5))
+        Button { music.openInSpotify() } label: {
+            Group {
+                if let image = music.artwork {
+                    Image(nsImage: image).resizable().aspectRatio(contentMode: .fill)
+                } else {
+                    ZStack {
+                        Color.white.opacity(0.1)
+                        Image(systemName: "music.note")
+                            .font(.system(size: side * 0.42))
+                            .foregroundStyle(.white.opacity(0.5))
+                    }
                 }
             }
+            .frame(width: side, height: side)
+            .clipShape(RoundedRectangle(cornerRadius: side * 0.24, style: .continuous))
+            .contentShape(RoundedRectangle(cornerRadius: side * 0.24, style: .continuous))
         }
-        .frame(width: side, height: side)
-        .clipShape(RoundedRectangle(cornerRadius: side * 0.24, style: .continuous))
+        .buttonStyle(.plain)
         // Covers used to swap instantly on a track change; now one fades out
         // under the next as it settles in.
         .id(music.now.trackID)

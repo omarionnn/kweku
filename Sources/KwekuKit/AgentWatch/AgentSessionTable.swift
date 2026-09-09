@@ -33,6 +33,10 @@ public struct AgentSession: Equatable, Sendable {
     /// Which harness runs this session ("omp", "claude", "openclaw"); nil
     /// when the emitter never said.
     public var source: String?
+    /// This session's transcript, when its harness publishes one. Kept on the
+    /// session rather than read off the triggering event: the report is built
+    /// after the fact, by which time that event is gone.
+    public var transcriptPath: String?
 
     /// The row label for the session's current phase, e.g. "Bash", "thinking".
     public var activityLabel: String? {
@@ -102,6 +106,9 @@ public struct AgentSessionTable: Equatable {
         s.activity = event.activity ?? (event.state == .working ? .thinking : nil)
         s.tool = event.tool
         if let source = event.source { s.source = source }
+        // Never cleared by a later event that omits it: the path is a property
+        // of the session, and only the hooks that carry it can teach it.
+        if let transcript = event.transcriptPath { s.transcriptPath = transcript }
         if !event.cwd.isEmpty { s.cwd = event.cwd }
         if event.pid > 0 { s.pid = event.pid }
         sessions[event.sessionID] = s

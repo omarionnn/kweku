@@ -22,6 +22,15 @@ public enum GeminiServerEvent: Equatable, Sendable {
 public enum GeminiLiveProtocol {
 
     public static let defaultModel = "models/gemini-2.5-flash-native-audio-preview-12-2025"
+
+    /// Kweku's speaking voice. Without an explicit `speechConfig` the server
+    /// picks a default per session, so the voice changes from one connect to
+    /// the next — pinning it is what keeps him sounding like one person.
+    /// Override without a rebuild:
+    /// `defaults write com.omari.Kweku liveVoice Puck`.
+    public static var voiceName: String {
+        UserDefaults.standard.string(forKey: "liveVoice") ?? "Charon"
+    }
     public static let endpointBase =
         "wss://generativelanguage.googleapis.com/ws/google.ai.generativelanguage.v1beta.GenerativeService.BidiGenerateContent"
 
@@ -44,8 +53,16 @@ public enum GeminiLiveProtocol {
     /// withdrawing the claim of sight does.
     ///
     /// So sight is decided before the socket opens and stated once, plainly.
+    ///
+    /// `profileFields` names what Kweku holds on Omari — names only, never
+    /// values. That is the whole privacy contract of `PersonalProfile`: knowing
+    /// an `email` exists is enough to offer to type it, while the address
+    /// itself stays on the machine instead of being shipped to Google at the
+    /// start of every session.
     public static func systemInstruction(visionAvailable: Bool = true,
-                                         visionIssue: String? = nil) -> String {
+                                         visionIssue: String? = nil,
+                                         profileFields: [String] = []) -> String {
+        let profile = profileNote(fields: profileFields, sighted: visionAvailable)
         guard visionAvailable else {
             let reason = visionIssue ?? "Screen Recording permission is not granted to Kweku"
             return persona + """
@@ -59,7 +76,7 @@ public enum GeminiLiveProtocol {
                 cannot see his screen right now, give that reason, and point \
                 him at System Settings › Privacy & Security › Screen Recording \
                 to enable Kweku and restart you. Never invent a screen.
-                """
+                """ + profile
         }
         return persona + """
 
@@ -79,7 +96,42 @@ public enum GeminiLiveProtocol {
             was doing, what an earlier error or page said, or to find something \
             he saw before, call `recall_screen` instead of guessing — your \
             memory of his screen is real and searchable, so use it.
+            """ + profile
+    }
+
+    /// What Kweku may say it knows, and when to speak up about it.
+    ///
+    /// The offer is the point. Omari's standard for this is that a companion
+    /// watching him retype his own email into a signup form should say "I have
+    /// these, want them in?" before he asks — waiting to be told is the
+    /// failure, not a safe default. So the instruction is to offer once,
+    /// plainly, and then drop it; a second nag about the same form is worse
+    /// than silence.
+    public static func profileNote(fields: [String], sighted: Bool) -> String {
+        guard !fields.isEmpty else { return "" }
+        let list = fields.joined(separator: ", ")
+        var note = """
+
+
+            You hold some of Omari's own details on this machine — \(list) — \
+            and can type any of them into whatever field he has focused with \
+            `fill_field`. You do not know the values themselves and must never \
+            claim to; you know only that you have them, and Kweku types them \
+            locally without showing you.
             """
+        if sighted {
+            note += """
+
+
+                When you can see he is filling in a form — a signup, an \
+                application, a checkout — and it wants details you hold, say so \
+                before he asks: name the ones you have and offer to type them. \
+                Offer once per form, then let it go. Fill only what he agrees \
+                to, one `fill_field` call per field, and never submit the form \
+                or press any button — the last click stays his.
+                """
+        }
+        return note
     }
 
     /// Default sighted persona, for callers that don't decide sight themselves.
@@ -107,7 +159,12 @@ public enum GeminiLiveProtocol {
         let frame: [String: Any] = [
             "setup": [
                 "model": model,
-                "generationConfig": ["responseModalities": ["AUDIO"]],
+                "generationConfig": [
+                    "responseModalities": ["AUDIO"],
+                    "speechConfig": [
+                        "voiceConfig": ["prebuiltVoiceConfig": ["voiceName": voiceName]],
+                    ],
+                ],
                 "systemInstruction": ["parts": [["text": system]]],
                 // Ask for periodic resumption handles so a dropped/limited
                 // connection can continue the same conversation.
@@ -153,6 +210,24 @@ public enum GeminiLiveProtocol {
                                         ],
                                     ],
                                     "required": [String](),
+                                ],
+                            ],
+                            [
+                                "name": "fill_field",
+                                "description": "Types one of Omari's own saved details into the form field he currently has focused — email, name, city and the like. You never see the value; name the field and Kweku types it locally. Use this the moment he agrees to you filling something in, one call per field, and tell him to click the field first if nothing is focused.",
+                                "parameters": [
+                                    "type": "OBJECT",
+                                    "properties": [
+                                        "field": [
+                                            "type": "STRING",
+                                            "description": "Which detail to type. Use the form's own label ('Full name', 'Where are you based?') or a known field name.",
+                                        ],
+                                        "replace_existing": [
+                                            "type": "STRING",
+                                            "description": "Pass 'true' only if Omari has said to overwrite what is already in the field. Omit otherwise.",
+                                        ],
+                                    ],
+                                    "required": ["field"],
                                 ],
                             ],
                             [

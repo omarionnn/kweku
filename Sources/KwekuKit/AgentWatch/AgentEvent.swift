@@ -62,16 +62,22 @@ public struct AgentEvent: Equatable, Sendable {
     /// Which harness emitted this: "omp", "claude", "openclaw"… nil when the
     /// emitter predates the field.
     public var source: String?
+    /// Where this session's transcript is being written, when the harness
+    /// says. Claude Code puts `transcript_path` on every hook payload and the
+    /// installed hook forwards that payload verbatim, so it arrives for free —
+    /// and it is the only route to what the session thought it was doing.
+    public var transcriptPath: String?
 
     public init(sessionID: String, cwd: String, pid: Int32, state: AgentState,
                 gone: Bool = false, activity: AgentActivity? = nil, tool: String? = nil,
-                source: String? = nil) {
+                source: String? = nil, transcriptPath: String? = nil) {
         self.sessionID = sessionID; self.cwd = cwd; self.pid = pid
         self.state = state; self.gone = gone
         // An activity only means something while the agent has the floor.
         self.activity = state == .working ? activity : nil
         self.tool = self.activity == .tooling ? tool : nil
         self.source = source
+        self.transcriptPath = transcriptPath
     }
 
     /// Parse one JSON line in either wire format. Returns nil on garbage.
@@ -83,6 +89,9 @@ public struct AgentEvent: Equatable, Sendable {
         let cwd = (obj["cwd"] as? String) ?? ""
         let pid = Int32((obj["pid"] as? Int) ?? Int((obj["pid"] as? String) ?? "") ?? 0)
         let tool = obj["tool_name"] as? String ?? obj["tool"] as? String
+        // Claude Code's own field name; accepted in either format so the omp
+        // extension can start sending one without a wire change here.
+        let transcript = (obj["transcript_path"] as? String).flatMap { $0.isEmpty ? nil : $0 }
 
         // Kweku native format.
         if let raw = obj["state"] as? String {
@@ -90,12 +99,13 @@ public struct AgentEvent: Equatable, Sendable {
             let source = obj["source"] as? String
             if raw == "gone" {
                 return AgentEvent(sessionID: id, cwd: cwd, pid: pid, state: .idle, gone: true,
-                                  source: source)
+                                  source: source, transcriptPath: transcript)
             }
             guard let state = AgentState(rawValue: raw) else { return nil }
             let activity = (obj["activity"] as? String).flatMap(AgentActivity.init(rawValue:))
             return AgentEvent(sessionID: id, cwd: cwd, pid: pid, state: state,
-                              activity: activity, tool: tool, source: source)
+                              activity: activity, tool: tool, source: source,
+                              transcriptPath: transcript)
         }
 
         // Claude Code hook format. The tool hooks are what give the notch a
@@ -105,11 +115,13 @@ public struct AgentEvent: Equatable, Sendable {
             let id = (obj["session_id"] as? String) ?? String(pid)
             func working(_ activity: AgentActivity, tool: String? = nil) -> AgentEvent {
                 AgentEvent(sessionID: id, cwd: cwd, pid: pid, state: .working,
-                           activity: activity, tool: tool, source: "claude")
+                           activity: activity, tool: tool, source: "claude",
+                           transcriptPath: transcript)
             }
             switch hook {
             case "SessionStart":
-                return AgentEvent(sessionID: id, cwd: cwd, pid: pid, state: .idle, source: "claude")
+                return AgentEvent(sessionID: id, cwd: cwd, pid: pid, state: .idle, source: "claude",
+                                  transcriptPath: transcript)
             case "UserPromptSubmit": return working(.thinking)
             case "PreToolUse":       return working(.tooling, tool: tool)
             // The tool has returned and the model is reading its output —
@@ -117,10 +129,11 @@ public struct AgentEvent: Equatable, Sendable {
             case "PostToolUse":      return working(.thinking)
             case "SubagentStop":     return working(.thinking)
             case "Stop", "Notification":
-                return AgentEvent(sessionID: id, cwd: cwd, pid: pid, state: .waiting, source: "claude")
+                return AgentEvent(sessionID: id, cwd: cwd, pid: pid, state: .waiting,
+                                  source: "claude", transcriptPath: transcript)
             case "SessionEnd":
                 return AgentEvent(sessionID: id, cwd: cwd, pid: pid, state: .idle, gone: true,
-                                  source: "claude")
+                                  source: "claude", transcriptPath: transcript)
             default: return nil
             }
         }

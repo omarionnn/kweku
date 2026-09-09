@@ -23,12 +23,22 @@ enum GeminiLiveTests {
             Check.ok(setup?["model"] as? String == "models/test-live", "model")
             let gen = setup?["generationConfig"] as? [String: Any]
             Check.ok((gen?["responseModalities"] as? [String]) == ["AUDIO"], "AUDIO modality")
+            // Unpinned, the server hands out a different voice per session.
+            let speech = gen?["speechConfig"] as? [String: Any]
+            let prebuilt = (speech?["voiceConfig"] as? [String: Any])?["prebuiltVoiceConfig"] as? [String: Any]
+            Check.ok(prebuilt?["voiceName"] as? String == GeminiLiveProtocol.voiceName, "voice pinned")
             let tools = (setup?["tools"] as? [[String: Any]]) ?? []
             Check.ok(tools.count == 2, "two tool groups")
             let fns = (tools.first?["functionDeclarations"] as? [[String: Any]]) ?? []
-            Check.ok(fns.count == 3, "three function declarations")
+            Check.ok(fns.count == 4, "four function declarations")
             let names = fns.compactMap { $0["name"] as? String }
             Check.ok(names.contains("recall_screen"), "screen recall tool declared")
+            Check.ok(names.contains("fill_field"), "form fill tool declared")
+            let fill = fns.first { $0["name"] as? String == "fill_field" }
+            let fillParams = fill?["parameters"] as? [String: Any]
+            Check.ok((fillParams?["required"] as? [String]) == ["field"], "fill needs a field named")
+            let fillProps = fillParams?["properties"] as? [String: Any]
+            Check.ok(fillProps?["replace_existing"] != nil, "overwriting is an explicit opt-in")
             let recall = fns.first { $0["name"] as? String == "recall_screen" }
             let recallProps = (recall?["parameters"] as? [String: Any])?["properties"] as? [String: Any]
             Check.ok(recallProps?["query"] != nil && recallProps?["minutes_ago"] != nil,

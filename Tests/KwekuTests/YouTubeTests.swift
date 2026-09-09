@@ -179,6 +179,97 @@ enum YouTubeTests {
             Check.ok(YouTubeChannelID.inPage("<html>nothing here</html>") == nil, "no id")
         }
 
+        // MARK: - Data API
+
+        Check.run("uploads playlist is the channel id with UC swapped for UU") {
+            Check.ok(YouTubeAPI.uploadsPlaylistID(forChannel: "UCXuqSBlHAE6Xw-yeJA0Tunw")
+                        == "UUXuqSBlHAE6Xw-yeJA0Tunw", "UC -> UU")
+            Check.ok(YouTubeAPI.uploadsPlaylistID(forChannel: "nonsense") == nil, "not a channel id")
+        }
+
+        Check.run("uploads URL carries the playlist, key and both parts") {
+            let url = YouTubeAPI.uploadsURL(
+                channelID: "UCXuqSBlHAE6Xw-yeJA0Tunw", key: "AIza")?.absoluteString ?? ""
+            Check.ok(url.contains("playlistId=UUXuqSBlHAE6Xw-yeJA0Tunw"), "playlist")
+            Check.ok(url.contains("key=AIza"), "key")
+            // contentDetails is what carries the real upload time.
+            Check.ok(url.contains("contentDetails"), "contentDetails part")
+        }
+
+        Check.run("decodes uploads, preferring the real upload time") {
+            let json = """
+            {"items":[
+              {"snippet":{"title":"A video","resourceId":{"videoId":"vid1"},
+                          "videoOwnerChannelTitle":"Patrick Cc:",
+                          "videoOwnerChannelId":"UC-mP1nlk0qOutA08zuQHORA",
+                          "publishedAt":"2026-01-01T00:00:00Z"},
+               "contentDetails":{"videoPublishedAt":"2026-09-08T17:00:12Z"}}
+            ]}
+            """
+            guard let out = YouTubeAPI.decodeUploads(Data(json.utf8)), out.count == 1 else {
+                return Check.ok(false, "failed to decode")
+            }
+            Check.ok(out[0].id == "vid1", "video id")
+            Check.ok(out[0].channelTitle == "Patrick Cc:", "owner title")
+            Check.ok(out[0].channelId == "UC-mP1nlk0qOutA08zuQHORA", "owner id")
+            // 2026-01-01 would mean it took snippet.publishedAt, which is when
+            // the video entered the playlist rather than when it went up.
+            let month = Calendar(identifier: .gregorian).component(.month, from: out[0].published)
+            Check.ok(month == 9, "videoPublishedAt wins — got month \(month)")
+        }
+
+        Check.run("tombstones and errors are not uploads") {
+            let dead = """
+            {"items":[{"snippet":{"title":"Private video","resourceId":{"videoId":"x"},
+             "publishedAt":"2026-09-08T17:00:12Z"}}]}
+            """
+            Check.ok(YouTubeAPI.decodeUploads(Data(dead.utf8))?.isEmpty == true,
+                     "a private-video tombstone is skipped")
+            Check.ok(YouTubeAPI.decodeUploads(
+                Data(#"{"error":{"code":403}}"#.utf8)) == nil,
+                     "an error body is a failure, not an empty channel")
+            Check.ok(YouTubeAPI.decodeUploads(Data("garbage".utf8)) == nil, "garbage")
+        }
+
+        Check.run("channel lookup picks id or handle") {
+            let byID = YouTubeAPI.lookupURL(
+                for: "https://www.youtube.com/channel/UCXuqSBlHAE6Xw-yeJA0Tunw",
+                key: "AIza")?.absoluteString ?? ""
+            Check.ok(byID.contains("id=UCXuqSBlHAE6Xw-yeJA0Tunw"), "by id")
+            let byHandle = YouTubeAPI.lookupURL(
+                for: "https://www.youtube.com/@LinusTechTips", key: "AIza")?.absoluteString ?? ""
+            // `@` is legal unencoded in a query, and URLComponents leaves it.
+            Check.ok(byHandle.contains("forHandle=@LinusTechTips")
+                        || byHandle.contains("forHandle=%40LinusTechTips"),
+                     "by handle — got \(byHandle)")
+        }
+
+        Check.run("finds the handle in whatever was pasted") {
+            Check.ok(YouTubeAPI.handle(in: "@veritasium") == "@veritasium", "bare handle")
+            Check.ok(YouTubeAPI.handle(in: "veritasium") == "@veritasium", "bare word")
+            Check.ok(YouTubeAPI.handle(in: "https://www.youtube.com/@veritasium") == "@veritasium",
+                     "handle URL")
+            Check.ok(YouTubeAPI.handle(in: "https://www.youtube.com/@veritasium/videos")
+                        == "@veritasium", "handle URL with a subpath")
+            // A video link has no handle in it; that has to fall through to
+            // the page scrape rather than being mangled into a fake one.
+            Check.ok(YouTubeAPI.handle(in: "https://youtu.be/5hEZMr-zB28") == nil,
+                     "a video link yields no handle")
+        }
+
+        Check.run("decodes a channel lookup") {
+            let json = """
+            {"items":[{"id":"UC-mP1nlk0qOutA08zuQHORA","snippet":{"title":"Patrick Cc:"}}]}
+            """
+            let channel = YouTubeAPI.decodeChannel(Data(json.utf8))
+            Check.ok(channel?.id == "UC-mP1nlk0qOutA08zuQHORA", "id")
+            Check.ok(channel?.title == "Patrick Cc:", "title")
+            Check.ok(channel?.notifies == true, "speaks by default")
+            Check.ok(YouTubeAPI.decodeChannel(Data(#"{"items":[]}"#.utf8)) == nil, "no match")
+            Check.ok(YouTubeAPI.decodeChannel(Data(#"{"error":{"code":400}}"#.utf8)) == nil,
+                     "error body")
+        }
+
         Check.run("decides which page to ask for a name") {
             func page(_ input: String) -> String { YouTubeChannelID.pageURL(for: input)?.absoluteString ?? "" }
             Check.ok(page("@LinusTechTips") == "https://www.youtube.com/@LinusTechTips", "handle")

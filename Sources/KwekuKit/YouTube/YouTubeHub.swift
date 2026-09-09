@@ -85,30 +85,36 @@ public final class YouTubeHub: ObservableObject {
         adding = true
         defer { adding = false }
 
+        // With a key, one call resolves the channel *and* names it. Without
+        // one, fall back to reading the id out of the page.
+        if let key = store.apiKey,
+           let url = YouTubeAPI.lookupURL(for: input, key: key),
+           let (data, response) = try? await URLSession.shared.data(from: url),
+           (response as? HTTPURLResponse)?.statusCode == 200,
+           let channel = YouTubeAPI.decodeChannel(data) {
+            store.add(channel)
+            await prime(channel.id)
+            lastError = nil
+            start()
+            return channel.title
+        }
+
         guard let id = await YouTubeChannelID.resolve(input) else {
             lastError = "Couldn't find a channel at that link"
             return nil
         }
-        guard let url = YouTubeFeed.feedURL(channelId: id),
-              let (data, response) = try? await URLSession.shared.data(from: url),
-              (response as? HTTPURLResponse)?.statusCode == 200
-        else {
-            lastError = "That channel has no readable feed"
-            return nil
-        }
-
-        // The feed is the title's only source now that there's no API. A
-        // channel that has never uploaded has no entries and therefore no
-        // name here; fall back to what was typed rather than refusing it.
-        let uploads = YouTubeFeed.parse(data)
-        let title = uploads.first?.channelTitle
+        let uploads = await fetchUploads(channelID: id)
+        // A channel with no readable uploads is still worth following — it may
+        // simply not have posted yet, and with no key the feed may be refusing
+        // us rather than the channel being empty. Name it from what was typed.
+        let title = uploads?.first?.channelTitle
             ?? input.trimmingCharacters(in: .whitespacesAndNewlines)
 
         store.add(YouTubeChannel(id: id, title: title))
 
         // Absorb the backlog now, while you're still looking at the menu you
         // changed, rather than announcing fifteen old videos at the next poll.
-        if !store.isPrimed(id) {
+        if let uploads, !store.isPrimed(id) {
             store.markSeen(uploads.map(\.id))
             store.remember(uploads: Array(uploads.prefix(5)))
             store.markPrimed(id)
@@ -116,6 +122,37 @@ public final class YouTubeHub: ObservableObject {
         lastError = nil
         start()
         return title
+    }
+
+    /// Swallow a newly followed channel's backlog so it is never announced.
+    private func prime(_ channelID: String) async {
+        guard !store.isPrimed(channelID),
+              let uploads = await fetchUploads(channelID: channelID) else { return }
+        store.markSeen(uploads.map(\.id))
+        store.remember(uploads: Array(uploads.prefix(5)))
+        store.markPrimed(channelID)
+    }
+
+    /// A channel's recent uploads: the Data API when a key is set, the public
+    /// Atom feed otherwise.
+    ///
+    /// Nil means "couldn't read", which is different from "nothing new" — the
+    /// caller must not treat a failed fetch as an empty channel and mark its
+    /// backlog seen.
+    private func fetchUploads(channelID: String) async -> [YouTubeUpload]? {
+        if let key = store.apiKey,
+           let url = YouTubeAPI.uploadsURL(channelID: channelID, key: key),
+           let (data, response) = try? await URLSession.shared.data(from: url),
+           (response as? HTTPURLResponse)?.statusCode == 200,
+           let uploads = YouTubeAPI.decodeUploads(data) {
+            return uploads
+        }
+        guard let url = YouTubeFeed.feedURL(channelId: channelID),
+              let (data, response) = try? await URLSession.shared.data(from: url),
+              (response as? HTTPURLResponse)?.statusCode == 200
+        else { return nil }
+        let parsed = YouTubeFeed.parse(data)
+        return parsed.isEmpty ? nil : parsed
     }
 
     public func remove(_ channelID: String) {
@@ -137,14 +174,12 @@ public final class YouTubeHub: ObservableObject {
         polling = true
         defer { polling = false }
 
+        var unreadable = 0
         for channel in channels {
-            guard let url = YouTubeFeed.feedURL(channelId: channel.id) else { continue }
-            guard let (data, response) = try? await URLSession.shared.data(from: url),
-                  (response as? HTTPURLResponse)?.statusCode == 200
-            else { continue }
-
-            let uploads = YouTubeFeed.parse(data)
-            guard !uploads.isEmpty else { continue }
+            guard let uploads = await fetchUploads(channelID: channel.id), !uploads.isEmpty else {
+                unreadable += 1
+                continue
+            }
 
             // First read of this channel is its backlog: absorb it silently.
             guard store.isPrimed(channel.id) else {
@@ -161,6 +196,16 @@ public final class YouTubeHub: ObservableObject {
             store.markSeen(fresh.map(\.id))
             store.remember(uploads: fresh)
             for upload in fresh { onUpload?(upload) }
+        }
+
+        // Say so when the feeds are stonewalling rather than failing quietly
+        // for days. Without a key this is common — the public feed answers 404
+        // for a great many channels — and the menu is the only place that can
+        // explain why a followed channel never says anything.
+        if unreadable == channels.count, store.apiKey == nil {
+            lastError = "Feeds unreadable — add a YouTube API key"
+        } else if unreadable == 0 {
+            lastError = nil
         }
     }
 }

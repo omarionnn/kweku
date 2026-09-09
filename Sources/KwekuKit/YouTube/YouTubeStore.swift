@@ -19,6 +19,7 @@ public final class YouTubeStore: ObservableObject {
         static let seen = "youtubeSeenVideoIDs"
         static let recent = "youtubeRecentUploads"
         static let primed = "youtubePrimedChannels"
+        static let apiKey = "youtubeAPIKey"
     }
 
     /// How many video ids to remember.
@@ -45,6 +46,26 @@ public final class YouTubeStore: ObservableObject {
         seenOrder = defaults.stringArray(forKey: Key.seen) ?? []
         seenIDs = Set(seenOrder)
         primedIDs = Set(defaults.stringArray(forKey: Key.primed) ?? [])
+    }
+
+    // MARK: - API key
+
+    /// A plain Data API key. Not a credential for *you* — it identifies the
+    /// caller, not the user, and grants nothing but public reads. Optional:
+    /// without it uploads come from the Atom feed, which needs no setup but
+    /// answers 404 for a lot of channels.
+    public var apiKey: String? {
+        get {
+            if let env = ProcessInfo.processInfo.environment["YOUTUBE_API_KEY"], !env.isEmpty {
+                return env
+            }
+            let stored = defaults.string(forKey: Key.apiKey)
+            return (stored?.isEmpty == false) ? stored : nil
+        }
+        set {
+            defaults.set(newValue, forKey: Key.apiKey)
+            objectWillChange.send()
+        }
     }
 
     // MARK: - Channels

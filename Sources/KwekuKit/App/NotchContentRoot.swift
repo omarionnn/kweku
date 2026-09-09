@@ -678,6 +678,10 @@ struct NotchContentRoot: View {
         if !youtube.store.channels.isEmpty {
             Button("Stop Following a Channel…") { promptToRemoveYouTubeChannel() }
         }
+        Button(youtube.store.apiKey == nil
+               ? "Set YouTube API Key…" : "Change YouTube API Key…") {
+            promptForYouTubeAPIKey()
+        }
         // A drop is never requeued — the gate closing means you are already
         // looking at the notch, and re-saying it would be talking over
         // yourself. That is right for an agent, whose state the panel still
@@ -692,6 +696,46 @@ struct NotchContentRoot: View {
         if let error = youtube.lastError {
             Button(error) {}.disabled(true)
         }
+    }
+
+    /// Ask for a Data API key.
+    ///
+    /// Not OAuth and not a sign-in: a key identifies the *app*, grants nothing
+    /// but public reads, needs no consent screen, no domain and no publishing,
+    /// and never expires. Optional — without it uploads come from the public
+    /// Atom feed, which needs no setup at all but answers 404 for a great many
+    /// channels.
+    private func promptForYouTubeAPIKey() {
+        let alert = NSAlert()
+        alert.messageText = "YouTube API key"
+        alert.informativeText = """
+            console.cloud.google.com → APIs & Services → Credentials → Create \
+            credentials → API key, with the YouTube Data API v3 enabled. \
+            No consent screen and no sign-in.
+
+            Makes upload checks reliable; the public feed 404s for many \
+            channels. Stored in app preferences.
+            """
+        let field = EditableSecureTextField(frame: NSRect(x: 0, y: 0, width: 300, height: 24))
+        field.placeholderString = "AIza…"
+        alert.accessoryView = field
+        alert.addButton(withTitle: "Save")
+        if youtube.store.apiKey != nil { alert.addButton(withTitle: "Remove Key") }
+        alert.addButton(withTitle: "Cancel")
+        NSApp.activate(ignoringOtherApps: true)
+
+        let response = alert.runModal()
+        if youtube.store.apiKey != nil, response == .alertSecondButtonReturn {
+            youtube.store.apiKey = nil
+            showToast("YouTube API key removed")
+            return
+        }
+        guard response == .alertFirstButtonReturn else { return }
+        let key = field.stringValue.trimmingCharacters(in: .whitespaces)
+        guard !key.isEmpty else { return }
+        youtube.store.apiKey = key
+        showToast("YouTube API key saved")
+        Task { await youtube.poll() }
     }
 
     /// Unfollowing, without a submenu to lose the click in.

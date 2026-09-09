@@ -272,8 +272,14 @@ struct AgentPanelView: View {
         }
     }
 
-    /// Fits three 22pt buttons; the elapsed label is never wider than "999h".
-    private var actionClusterWidth: CGFloat { 70 }
+    /// Fits four 22pt buttons; the elapsed label is never wider than "999h".
+    ///
+    /// Four, not three, since reply stopped being confined to waiting sessions:
+    /// a working agent now offers reply, focus, reveal *and* interrupt at once.
+    /// The slot is fixed rather than fitted because it holds the elapsed label
+    /// off-hover too — sizing it to the buttons would make every row twitch as
+    /// the cursor crossed it.
+    private var actionClusterWidth: CGFloat { 92 }
 
     /// Per-session actions, revealed on hover.
     ///

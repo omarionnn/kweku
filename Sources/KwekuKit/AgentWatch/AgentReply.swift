@@ -36,10 +36,20 @@ public enum AgentReply {
     }
 
     /// Whether a session can be answered this way: it has to be a real process
-    /// in a real window, and it has to actually be waiting. Typing at a working
-    /// agent lands mid-turn, where the keystrokes mean something else.
+    /// in a real window.
+    ///
+    /// State deliberately doesn't come into it. A TUI reads stdin for the whole
+    /// turn, so a line typed at a working agent queues and is taken at the next
+    /// prompt rather than landing in the middle of one — and waiting is only
+    /// the most *common* moment to answer, not the only useful one. "use the
+    /// worktree, not master" is worth far more said while the agent is working
+    /// than after it has finished doing it the other way.
+    ///
+    /// Sessions without a process are still refused, and that refusal is the
+    /// honest one: a gateway conversation has no tty to type into, and its
+    /// events carry no session key to address instead, so an arrow on that row
+    /// would be a button that goes nowhere.
     public static func canReply(to session: AgentSession) -> Bool {
-        guard session.state == .waiting else { return false }
         if case .terminal = session.destination { return true }
         return false
     }

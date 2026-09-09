@@ -612,24 +612,6 @@ struct NotchContentRoot: View {
         vm.desiredSize = CGSize(width: width, height: height)
     }
 
-    /// Small modal for the manual-city fallback (spec: CoreLocation with a
-    /// manual city fallback). Only reachable from the Weather menu.
-    private func promptForCity() {
-        let alert = NSAlert()
-        alert.messageText = "Weather location"
-        alert.informativeText = "Enter a city for Kweku's weather."
-        let field = EditableTextField(frame: NSRect(x: 0, y: 0, width: 220, height: 24))
-        field.placeholderString = "e.g. Grand Rapids"
-        alert.accessoryView = field
-        alert.addButton(withTitle: "Set")
-        alert.addButton(withTitle: "Cancel")
-        NSApp.activate(ignoringOtherApps: true)
-        guard alert.runModal() == .alertFirstButtonReturn else { return }
-        let name = field.stringValue.trimmingCharacters(in: .whitespaces)
-        guard !name.isEmpty else { return }
-        Task { await weather.setManualCity(name) }
-    }
-
     private func startLive() {
         if LiveSessionController.apiKey == nil { promptForGeminiKey() }
         guard LiveSessionController.apiKey != nil else { return }
@@ -651,162 +633,6 @@ struct NotchContentRoot: View {
         if !key.isEmpty { LiveSessionController.storeAPIKey(key) }
     }
 
-    // MARK: - YouTube
-
-    /// Following lives in the menu rather than a settings window because it is
-    /// the only setting here you change while thinking about a *channel* —
-    /// usually right after one of its notices, with the notch under the cursor.
-    /// Deliberately flat, like every other item in this menu.
-    ///
-    /// A nested `Menu` inside a `contextMenu` is unreliable on macOS — the
-    /// submenu flickers and swallows clicks, which is exactly what a menu must
-    /// never do. Nothing else in this file nests, and that was not an accident
-    /// worth overturning for a channel list.
-    @ViewBuilder private var youtubeMenu: some View {
-        Button(youtube.adding ? "Adding Channel…" : "Add YouTube Channel…") {
-            promptForYouTubeChannel()
-        }
-        .disabled(youtube.adding)
-
-        // The check is a quiet switch, not a selection: everything listed is
-        // followed, and unchecking silences one without forgetting it.
-        ForEach(sortedChannels, id: \.id) { channel in
-            Button(action: { youtube.setNotifies(!channel.notifies, for: channel.id) }) {
-                Label(channel.title, systemImage: channel.notifies ? "checkmark" : "")
-            }
-        }
-        if !youtube.store.channels.isEmpty {
-            Button("Stop Following a Channel…") { promptToRemoveYouTubeChannel() }
-        }
-        Button(youtube.store.apiKey == nil
-               ? "Set YouTube API Key…" : "Change YouTube API Key…") {
-            promptForYouTubeAPIKey()
-        }
-        // A drop is never requeued — the gate closing means you are already
-        // looking at the notch, and re-saying it would be talking over
-        // yourself. That is right for an agent, whose state the panel still
-        // holds, but a video announced while you were typing would otherwise
-        // be gone with no record anywhere. This is that record.
-        ForEach(youtube.store.recent.prefix(5), id: \.id) { upload in
-            Button("▶ \(upload.channelTitle) — \(upload.title)") {
-                guard let url = upload.watchURL else { return }
-                NSWorkspace.shared.open(url)
-            }
-        }
-        if let error = youtube.lastError {
-            Button(error) {}.disabled(true)
-        }
-    }
-
-    /// Ask for a Data API key.
-    ///
-    /// Not OAuth and not a sign-in: a key identifies the *app*, grants nothing
-    /// but public reads, needs no consent screen, no domain and no publishing,
-    /// and never expires. Optional — without it uploads come from the public
-    /// Atom feed, which needs no setup at all but answers 404 for a great many
-    /// channels.
-    private func promptForYouTubeAPIKey() {
-        let alert = NSAlert()
-        alert.messageText = "YouTube API key"
-        alert.informativeText = """
-            console.cloud.google.com → APIs & Services → Credentials → Create \
-            credentials → API key, with the YouTube Data API v3 enabled. \
-            No consent screen and no sign-in.
-
-            Makes upload checks reliable; the public feed 404s for many \
-            channels. Stored in app preferences.
-            """
-        let field = EditableSecureTextField(frame: NSRect(x: 0, y: 0, width: 300, height: 24))
-        field.placeholderString = "AIza…"
-        alert.accessoryView = field
-        alert.addButton(withTitle: "Save")
-        if youtube.store.apiKey != nil { alert.addButton(withTitle: "Remove Key") }
-        alert.addButton(withTitle: "Cancel")
-        NSApp.activate(ignoringOtherApps: true)
-
-        let response = alert.runModal()
-        if youtube.store.apiKey != nil, response == .alertSecondButtonReturn {
-            youtube.store.apiKey = nil
-            showToast("YouTube API key removed")
-            return
-        }
-        guard response == .alertFirstButtonReturn else { return }
-        let key = field.stringValue.trimmingCharacters(in: .whitespaces)
-        guard !key.isEmpty else { return }
-        youtube.store.apiKey = key
-        showToast("YouTube API key saved")
-        Task { await youtube.poll() }
-    }
-
-    /// Unfollowing, without a submenu to lose the click in.
-    ///
-    /// A pop-up inside an alert is a list the window server owns rather than
-    /// one SwiftUI has to keep alive under a moving cursor, so it behaves the
-    /// same every time.
-    private func promptToRemoveYouTubeChannel() {
-        let channels = sortedChannels
-        guard !channels.isEmpty else { return }
-
-        let alert = NSAlert()
-        alert.messageText = "Stop following a channel"
-        alert.informativeText = "Its uploads will no longer open the notch."
-        let picker = NSPopUpButton(frame: NSRect(x: 0, y: 0, width: 300, height: 25))
-        picker.addItems(withTitles: channels.map(\.title))
-        alert.accessoryView = picker
-        alert.addButton(withTitle: "Stop Following")
-        alert.addButton(withTitle: "Cancel")
-        NSApp.activate(ignoringOtherApps: true)
-        guard alert.runModal() == .alertFirstButtonReturn else { return }
-
-        let index = picker.indexOfSelectedItem
-        guard channels.indices.contains(index) else { return }
-        let channel = channels[index]
-        youtube.remove(channel.id)
-        showToast("Stopped following \(channel.title)")
-    }
-
-    private var sortedChannels: [YouTubeChannel] {
-        youtube.store.channels.sorted {
-            $0.title.localizedCaseInsensitiveCompare($1.title) == .orderedAscending
-        }
-    }
-
-    /// Ask for a channel, in whatever form is on the clipboard.
-    ///
-    /// No account, no consent screen, no key. A channel id is public and its
-    /// uploads are a public feed, so the only thing needed is which channel —
-    /// and every form you can copy out of a browser is accepted.
-    private func promptForYouTubeChannel() {
-        let alert = NSAlert()
-        alert.messageText = "Follow a YouTube channel"
-        alert.informativeText = """
-            Paste a channel link, an @handle, or a link to one of its videos.             Kweku will tell you when it uploads.
-
-            No sign-in and no API key — uploads come from the channel's public             feed.
-            """
-        let field = EditableTextField(frame: NSRect(x: 0, y: 0, width: 320, height: 24))
-        field.placeholderString = "youtube.com/@handle"
-        alert.accessoryView = field
-        alert.addButton(withTitle: "Follow")
-        alert.addButton(withTitle: "Cancel")
-        NSApp.activate(ignoringOtherApps: true)
-        guard alert.runModal() == .alertFirstButtonReturn else { return }
-        let input = field.stringValue.trimmingCharacters(in: .whitespaces)
-        guard !input.isEmpty else { return }
-
-        Task {
-            // Name the channel that was added rather than saying "done" —
-            // pasting a handle and being told only that it worked leaves you
-            // unsure you got the right one.
-            if let title = await youtube.addChannel(from: input) {
-                showToast("Following \(title)")
-            } else {
-                showToast(youtube.lastError ?? "Couldn't follow that channel")
-            }
-        }
-    }
-
-
     /// A drop with somewhere to go. Clicking a video opens the video — the
     /// notch behind it has nothing more to say about it than the line did.
     private func openDropLink(_ drop: NotchDrop) {
@@ -815,17 +641,16 @@ struct NotchContentRoot: View {
         NSWorkspace.shared.open(link)
     }
 
+    /// The right-click menu: what you do *now*.
+    ///
+    /// Configuration is deliberately absent — it lives in Settings, for the
+    /// reasons written down in `SettingsWindow.swift`. Modes are absent too:
+    /// scrolling the notch already cycles them, so listing them here duplicated
+    /// the gesture and, worse, handed every new component a free seat in the
+    /// menu. That is how this reached 28 items without anyone deciding it
+    /// should. `Hide` has to stay: once Kweku is hidden there is nothing left
+    /// to scroll, so the menu is the only way back.
     @ViewBuilder private var menu: some View {
-        // Built from the component list, so a new component appears in the
-        // menu and the scroll cycle from the same one-line registration.
-        ForEach(NookMode.cycle, id: \.self) { item in
-            Button(action: { mode = item }) {
-                Label(item.title, systemImage: mode == item ? "checkmark" : "")
-            }
-        }
-        if mode == .weather {
-            Button("Set City…") { promptForCity() }
-        }
         Button(hidden ? "Show" : "Hide") { hidden.toggle() }
         // The shelf's own escape hatch. Per-item Remove needs you to hover the
         // notch and hit a 40pt thumbnail; this always reaches, and it's the
@@ -846,21 +671,11 @@ struct NotchContentRoot: View {
             Label(drops.muted ? "Resume Notices" : "Pause Notices",
                   systemImage: drops.muted ? "bell.slash" : "")
         }
-        Button("Set Gemini API Key…") { promptForGeminiKey() }
-        Button("Forget Conversations") { live.forgetConversations() }
-        Button("Forget Screen History") { live.forgetScreenHistory() }
         Divider()
-        youtubeMenu
-        Divider()
-        Button(action: { agents.runSetup() }) {
-            Label("Set Up Agent Watch", systemImage: agents.setupDone ? "checkmark" : "")
+        Button("Settings…") {
+            SettingsWindowController.shared.show(weather: weather, live: live,
+                                                 agents: agents, youtube: youtube)
         }
-        // Fires itself at six; this is the early ask and the retry when the
-        // gateway wasn't up for it.
-        Button("Write Today's Handoff") { agents.writeHandoffNow() }
-        Divider()
-        Button("Enter licence key…") {}.disabled(true)
-        Divider()
         Button("Quit Kweku") { NSApp.terminate(nil) }
     }
 }

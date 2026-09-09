@@ -72,6 +72,11 @@ public final class WeatherHub: NSObject, ObservableObject {
         return try? JSONDecoder().decode(ManualCity.self, from: data)
     }
 
+    /// The pinned city's resolved name, or nil when CoreLocation is deciding.
+    /// Settings shows this so "Weather city" reads as a current value rather
+    /// than an empty box giving no clue what it is set to.
+    public var manualCityName: String? { manualCity?.name }
+
     /// Geocode and store a manual city, then fetch. Returns the resolved name.
     @discardableResult
     public func setManualCity(_ name: String) async -> String? {

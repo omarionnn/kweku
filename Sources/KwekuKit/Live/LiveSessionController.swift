@@ -67,6 +67,17 @@ public final class LiveSessionController: ObservableObject {
     /// Cooldown state for unsolicited triage.
     private var triage = TriageTrigger.State()
 
+    /// Cooldown state for unsolicited offers to fill in a form, and the timer
+    /// that goes looking for one. Separate from triage's state on purpose: a
+    /// build that just broke and a signup page he just opened are not competing
+    /// for the same silence, and sharing a cooldown would let one mute the other.
+    private var formWatch = FormWatch.State()
+    private var formTimer: Timer?
+
+    /// Omari's own details, read from disk at launch. Only the field *names*
+    /// ever reach the model; `fillField` resolves values locally.
+    private let profile = PersonalProfile()
+
     // A+B memory: rolling local transcript + session-resumption handle.
     private var memory = ConversationMemory()
     private var resumeHandle: String?
@@ -183,6 +194,7 @@ public final class LiveSessionController: ObservableObject {
             }
         }
         screen.startStreaming { [weak self] jpeg in self?.client.sendVideoFrame(jpeg) }
+        startWatchingForForms()
 
         running = true
         startedAt = Date()
@@ -205,6 +217,8 @@ public final class LiveSessionController: ObservableObject {
     private func stop(keepingReason: Bool) {
         guard running else { return }
         pendingVisionNote = nil
+        formTimer?.invalidate()
+        formTimer = nil
         screen.stop()
         audio.stop()
         client.disconnect()
@@ -297,6 +311,53 @@ public final class LiveSessionController: ObservableObject {
         }
     }
 
+    /// Start looking for a form he could be handed.
+    ///
+    /// Nothing here needs the camera: the offer is decided from the
+    /// Accessibility tree, so it still works in a session that opened blind,
+    /// and it costs no frames and no tokens until there is something to say.
+    private func startWatchingForForms() {
+        formTimer?.invalidate()
+        guard FormWatch.enabled, !profile.isEmpty else { return }
+        let timer = Timer(timeInterval: FormScan.pollInterval, repeats: true) { [weak self] _ in
+            MainActor.assumeIsolated { self?.lookForForm() }
+        }
+        // `.common`, so the search doesn't stall while a menu is open — the
+        // right-click menu is one of the ways he gets here in the first place.
+        RunLoop.main.add(timer, forMode: .common)
+        formTimer = timer
+    }
+
+    /// One pass: read the window in front of him, decide, and maybe speak.
+    ///
+    /// The cheap guards are checked here rather than inside the scan so that a
+    /// session where Kweku is mid-sentence costs nothing at all — the common
+    /// case for this timer is having no work to do.
+    private func lookForForm() {
+        guard running, !speaking, !composing else { return }
+        let holding = Set(profile.knownKeys)
+        guard !holding.isEmpty else { return }
+        // Accessibility reads block, and a window can hold a few hundred of
+        // them. Off the main thread, where they can't judder the notch; only
+        // the verdict comes back, so nothing thread-hostile crosses over.
+        DispatchQueue.global(qos: .utility).async { [weak self] in
+            guard let form = FormScan.frontmost(holding: holding) else { return }
+            DispatchQueue.main.async {
+                MainActor.assumeIsolated { self?.offerToFill(form) }
+            }
+        }
+    }
+
+    @MainActor
+    private func offerToFill(_ form: FormScan.Form) {
+        let (fire, next) = FormWatch.evaluate(
+            form: form, state: formWatch, now: Date(),
+            sessionLive: running, busy: speaking || composing)
+        formWatch = next
+        guard fire else { return }
+        _ = interject(FormWatch.prompt(form: form))
+    }
+
     /// Answer a `recall_screen` tool call from the local timeline.
     ///
     /// Window titles answer "what was I doing"; they cannot answer "what did
@@ -321,6 +382,28 @@ public final class LiveSessionController: ObservableObject {
             + "\(ScreenTimeline.relative(from: best.at, to: now)) actually showed:\n\(seen)"
     }
 
+    /// Answer a `fill_field` tool call by typing a saved detail into the field
+    /// Omari has focused.
+    ///
+    /// The value is read here and typed here; what goes back to the model is
+    /// only whether it landed. Echoing the filled text into the tool response
+    /// would put his email in the transcript and hand it to the very model the
+    /// profile is kept away from — so a success says which field, not what.
+    @MainActor
+    private func fillField(_ args: [String: String]) -> String {
+        guard let field = args["field"], !field.isEmpty else {
+            return "No field was named, so nothing was typed."
+        }
+        let replacing = (args["replace_existing"] ?? "").lowercased() == "true"
+        switch FieldFill.fill(label: field, from: profile, replacing: replacing) {
+        case .filled(let key):
+            return "Typed his \(key.replacingOccurrences(of: "_", with: " ")) into the focused "
+                + "field. Confirm it landed and move on; do not read the value back."
+        case .refused(let refusal):
+            return "Not typed. Tell him: \(refusal.spoken)"
+        }
+    }
+
     /// Connect (or reconnect) the Gemini socket. `fresh` starts a new
     /// conversation seeded with the memory recap; a reconnect passes the
     /// resumption handle so the server restores the same session.
@@ -333,7 +416,8 @@ public final class LiveSessionController: ObservableObject {
         connectedWithVision = canSee
         let system = GeminiLiveProtocol.systemInstruction(
             visionAvailable: canSee,
-            visionIssue: canSee ? nil : ScreenCaptureManager.permissionIssue)
+            visionIssue: canSee ? nil : ScreenCaptureManager.permissionIssue,
+            profileFields: profile.knownKeys)
             + (memory.recap() ?? "")
         client.connect(apiKey: key, model: Self.model,
                        system: system,
@@ -414,6 +498,8 @@ public final class LiveSessionController: ObservableObject {
                     output = await self?.dispatchToOpenClaw(args) ?? "Kweku went away mid-task."
                 case "recall_screen":
                     output = await self?.recallScreen(args) ?? "The screen timeline is unavailable."
+                case "fill_field":
+                    output = await self?.fillField(args) ?? "Kweku went away mid-task."
                 default:
                     output = "unknown tool \(name)"
                 }

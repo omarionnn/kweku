@@ -223,13 +223,15 @@ enum BurnTests {
             return table.sessions[id]!
         }
 
-        Check.run("only a waiting session in a real window can be answered") {
+        Check.run("any session in a real window can be answered") {
             Check.ok(AgentReply.canReply(to: session(id: "a", pid: 4321, state: .waiting)),
                      "the case the feature exists for")
-            // Typing at a working agent lands mid-turn, where the keystrokes
-            // mean something else entirely.
-            Check.ok(!AgentReply.canReply(to: session(id: "b", pid: 4321, state: .working)),
-                     "not while it has the floor")
+            // A working agent still reads stdin: the line queues and is taken
+            // at the next prompt, which is the whole point of saying it early.
+            Check.ok(AgentReply.canReply(to: session(id: "b", pid: 4321, state: .working)),
+                     "and the one worth catching before it finishes")
+            Check.ok(AgentReply.canReply(to: session(id: "c", pid: 4321, state: .idle)),
+                     "idle is still a live prompt")
             Check.ok(!AgentReply.canReply(to: session(id: "openclaw", pid: 0, state: .waiting)),
                      "the gateway session has no window to type into")
         }

@@ -99,10 +99,14 @@ public final class YouTubeOAuth {
         let body = YouTubeAPI.refreshBody(clientID: clientID, clientSecret: secret,
                                           refreshToken: refresh)
         guard let token = try await post(body) else {
-            // A refresh token is revoked by changing your password, by seven
-            // days of disuse on an unverified client, or from the account's
-            // permissions page. All of them look like this, and all of them
-            // mean the same thing: consent has to be given again.
+            // A refresh token dies for several reasons that all look identical
+            // here and all mean "consent again": revoked from the account's
+            // permissions page, unused for six months, or — the one that
+            // actually bites — the consent screen still being in *Testing*
+            // publishing status, which caps every refresh token at 7 days for
+            // any scope beyond name/email/profile. Publish the app to stop
+            // that; verification is only needed to drop the unverified-app
+            // warning, not to keep a token alive.
             store.refreshToken = nil
             throw Failure.exchangeFailed
         }

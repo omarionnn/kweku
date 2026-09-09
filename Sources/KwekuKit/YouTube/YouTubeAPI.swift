@@ -78,6 +78,31 @@ public enum YouTubeAPI {
         return c?.url
     }
 
+    /// Pull the client out of the JSON the Cloud console hands you.
+    ///
+    /// Google gives you a `client_secret_….json` on the download button next
+    /// to a new OAuth client, so asking someone to open it, find two fields
+    /// among eight, and retype them into a dialog is work a computer should be
+    /// doing. It also keeps the secret off the clipboard and out of any
+    /// transcript, which retyping does not.
+    ///
+    /// Desktop clients nest everything under `installed`; web clients use
+    /// `web`. Both are accepted — picking the wrong client type in the console
+    /// is an easy mistake, and the loopback flow works either way as long as
+    /// the redirect is allowed.
+    public static func decodeClientJSON(_ data: Data) -> (id: String, secret: String)? {
+        guard let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any]
+        else { return nil }
+        let root = (obj["installed"] as? [String: Any])
+            ?? (obj["web"] as? [String: Any])
+            ?? obj                      // some people unwrap it themselves
+        guard let id = root["client_id"] as? String,
+              let secret = root["client_secret"] as? String,
+              !id.isEmpty, !secret.isEmpty
+        else { return nil }
+        return (id, secret)
+    }
+
     public static func tokenExchangeBody(clientID: String, clientSecret: String,
                                          code: String, verifier: String,
                                          redirect: String) -> Data {

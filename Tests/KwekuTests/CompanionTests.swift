@@ -152,7 +152,123 @@ enum CompanionTests {
             Check.ok(work?.insertions == 2, "and carries real line counts")
             Check.ok(work?.commits.isEmpty == true, "no commits to quote, and no crash")
             Check.ok(work?.branch != nil, "the branch of an unborn HEAD is still readable")
+            Check.ok(work?.paths == ["Staged.swift"], "and names the file, not just a count")
         }
+
+        Check.run("the report names the files, committed and not") {
+            guard let repo = TempRepo(commit: true) else {
+                return Check.ok(false, "could not create a temp repo")
+            }
+            defer { repo.remove() }
+            repo.write("Landed.swift", born: repo.start.addingTimeInterval(5))
+            repo.git(["add", "Landed.swift"])
+            repo.git(["commit", "-q", "-m", "Land the thing"])
+            repo.write("Pending.swift", born: repo.start.addingTimeInterval(10))
+            repo.git(["add", "Pending.swift"])
+
+            let work = AgentReport.read(cwd: repo.path, since: repo.start) ?? .init()
+            Check.ok(work.paths.contains("Pending.swift"), "uncommitted work is named")
+            Check.ok(work.paths.contains("Landed.swift"), "so is work that already landed")
+            Check.ok(work.paths.count == 2, "and each file is named once, not once per source")
+
+            Check.ok((AgentReport.summary(work) ?? "").contains("Landed.swift"),
+                     "the spoken summary carries the names")
+
+            // A long list stops being informative, which is the whole reason
+            // to name files rather than count them.
+            let many = ["a/One.swift", "b/Two.swift", "Three.swift", "Four.swift", "Five.swift"]
+            let listed = AgentReport.names(many) ?? ""
+            Check.ok(listed.hasPrefix("One.swift, Two.swift"), "paths are spoken as bare names")
+            Check.ok(listed.contains("and 1 more"), "and the tail is elided")
+            Check.ok(AgentReport.names([]) == nil, "nothing touched -> no clause")
+        }
+
+        Check.run("a session's own words are carried, but never as evidence") {
+            // The transcript is the only place a session's *intent* exists. It
+            // is also the one input here that can be wrong on purpose, so the
+            // two must never end up in the same clause.
+            let transcript = TempTranscript([
+                #"{"type":"user","message":{"role":"user","content":"go"}}"#,
+                // A tool-call turn carries no prose; it must be walked past.
+                #"{"type":"assistant","message":{"content":[{"type":"tool_use","name":"Bash"}]}}"#,
+                #"{"type":"assistant","message":{"content":[{"type":"text","text":"Done. Moved the **Cluely** theme into the `miami` slot.\n\n- Blur at 32px\n"}]}}"#,
+                #"{"type":"summary","leafUuid":"x"}"#,
+            ])
+            defer { transcript.remove() }
+
+            let said = AgentReport.lastWords(transcriptPath: transcript.path)
+            Check.ok(said?.contains("Moved the Cluely theme") == true,
+                     "reads the last thing the agent actually said")
+            Check.ok(said?.contains("`") == false && said?.contains("*") == false,
+                     "markdown is flattened — this gets spoken aloud")
+            Check.ok(said?.contains("Blur at 32px") == true, "and the lines are joined, not cut")
+            Check.ok(AgentReport.lastWords(transcriptPath: "/nope/missing.jsonl") == nil,
+                     "a missing transcript is silence, not a crash")
+
+            // Observed on real transcripts: the last text in the file is often
+            // a lead-in to a tool call ("Now tests:"), which reads as a report
+            // and says nothing. The sign-off is the last text-only turn.
+            let leadIn = TempTranscript([
+                #"{"type":"assistant","message":{"content":[{"type":"text","text":"Rebuilt the reply gate so history stops arriving inverted."}]}}"#,
+                #"{"type":"assistant","message":{"content":[{"type":"text","text":"Now tests:"},{"type":"tool_use","name":"Bash"}]}}"#,
+            ])
+            defer { leadIn.remove() }
+            Check.ok(AgentReport.lastWords(transcriptPath: leadIn.path)?
+                        .hasPrefix("Rebuilt the reply gate") == true,
+                     "a lead-in to a tool call isn't the account of the work")
+
+            // Unless it's all there is: a session killed mid-turn still gets
+            // to say what it was in the middle of.
+            let killed = TempTranscript([
+                #"{"type":"assistant","message":{"content":[{"type":"text","text":"Now tests:"},{"type":"tool_use","name":"Bash"}]}}"#,
+            ])
+            defer { killed.remove() }
+            Check.ok(AgentReport.lastWords(transcriptPath: killed.path) == "Now tests:",
+                     "with nothing better, the lead-in is still what it said")
+
+            let long = String(repeating: "word ", count: 200)
+            Check.ok((AgentReport.condense(long) ?? "").count < 240, "a long sign-off is capped")
+            Check.ok((AgentReport.condense(long) ?? "").hasSuffix("…"), "and marked as clipped")
+
+            let now = Date(timeIntervalSince1970: 6_000_000)
+            let session = AgentSession(id: "a", cwd: "/Users/o/notch", pid: 1,
+                                       state: .waiting, lastUpdated: now,
+                                       stateSince: now.addingTimeInterval(-120),
+                                       source: "claude")
+            let work = AgentReport.Work(files: 2, insertions: 30, deletions: 1, branch: "main",
+                                        paths: ["Sources/Theme.swift"],
+                                        said: "Moved the Cluely theme into the miami slot.")
+            let prompt = AgentReport.prompt(for: [(session, work)], now: now)
+            Check.ok(prompt.contains("Moved the Cluely theme"), "the claim reaches the model")
+            Check.ok(prompt.contains("claim, not evidence"), "labelled as the agent's own account")
+            Check.ok(prompt.contains("Theme.swift"), "next to the file it can be checked against")
+            Check.ok(prompt.contains("whose account it is"), "and told to attribute it out loud")
+            Check.ok(prompt.contains("the diff doesn't show"),
+                     "with the mismatch named as the useful case")
+
+            // `summary` feeds DayHandoff, which writes a memory file that says
+            // in its own prompt that it was read from git and not from any
+            // agent's account of itself. It has to stay true.
+            Check.ok(AgentReport.summary(work)?.contains("Cluely") == false,
+                     "the git summary never absorbs the agent's account")
+            Check.ok(AgentReport.Work(said: "I refactored everything").isEmpty,
+                     "a paragraph over an empty diff is still nothing done")
+        }
+    }
+
+    /// A throwaway Claude Code transcript, so the tail reader is tested
+    /// against a real file rather than a hand-built string.
+    struct TempTranscript {
+        let path: String
+
+        init(_ lines: [String]) {
+            path = FileManager.default.temporaryDirectory
+                .appendingPathComponent("kweku-transcript-\(UUID().uuidString).jsonl").path
+            try? lines.joined(separator: "\n")
+                .write(toFile: path, atomically: true, encoding: .utf8)
+        }
+
+        func remove() { try? FileManager.default.removeItem(atPath: path) }
     }
 
     /// A throwaway git repo, so the git-reading paths are tested against git

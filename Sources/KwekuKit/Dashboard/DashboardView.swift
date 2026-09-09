@@ -166,7 +166,7 @@ struct DashboardView: View {
         case .stats:
             StatsView(stats: stats, vm: vm, rim: .none).expandedPanel
         case .agents:
-            AgentPanelView(agents: agents)
+            AgentPanelView(agents: agents, vm: vm)
         case .critter, .command:
             EmptyView()
         }

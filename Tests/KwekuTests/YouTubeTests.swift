@@ -204,6 +204,35 @@ enum YouTubeTests {
             Check.ok(YouTubeAPI.parseCallback(requestLine: "").code == nil, "empty line")
         }
 
+        Check.run("reads the client out of the console's JSON download") {
+            let desktop = """
+            {"installed":{"client_id":"123.apps.googleusercontent.com",
+             "project_id":"kweku","auth_uri":"https://accounts.google.com/o/oauth2/auth",
+             "token_uri":"https://oauth2.googleapis.com/token",
+             "client_secret":"GOCSPX-abc","redirect_uris":["http://localhost"]}}
+            """
+            let client = YouTubeAPI.decodeClientJSON(Data(desktop.utf8))
+            Check.ok(client?.id == "123.apps.googleusercontent.com", "id")
+            Check.ok(client?.secret == "GOCSPX-abc", "secret")
+
+            let web = #"{"web":{"client_id":"w","client_secret":"s"}}"#
+            Check.ok(YouTubeAPI.decodeClientJSON(Data(web.utf8))?.id == "w",
+                     "a web client is accepted too")
+            let bare = #"{"client_id":"b","client_secret":"s"}"#
+            Check.ok(YouTubeAPI.decodeClientJSON(Data(bare.utf8))?.id == "b", "already unwrapped")
+
+            // An API key file is the likeliest wrong file to reach for, and it
+            // has to fail loudly rather than half-configuring the app.
+            Check.ok(YouTubeAPI.decodeClientJSON(Data(#"{"api_key":"AIza"}"#.utf8)) == nil,
+                     "an API key is not an OAuth client")
+            Check.ok(YouTubeAPI.decodeClientJSON(
+                Data(#"{"installed":{"client_id":"x"}}"#.utf8)) == nil, "id without secret")
+            Check.ok(YouTubeAPI.decodeClientJSON(
+                Data(#"{"installed":{"client_id":"","client_secret":"s"}}"#.utf8)) == nil,
+                     "empty id is not a client")
+            Check.ok(YouTubeAPI.decodeClientJSON(Data("not json".utf8)) == nil, "garbage")
+        }
+
         Check.run("form bodies escape what Google rejects unescaped") {
             let body = String(decoding: YouTubeAPI.form(["code": "4/0AX4+a=b", "id": "x y"]),
                               as: UTF8.self)

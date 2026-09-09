@@ -1,5 +1,6 @@
 import SwiftUI
 import AppKit
+import UniformTypeIdentifiers
 
 
 /// Top-level content injected into the notch window. Owns the creature, shelf,
@@ -706,9 +707,68 @@ struct NotchContentRoot: View {
     }
 
     private func connectYouTube() {
-        if !youtube.store.hasClient { promptForYouTubeClient() }
+        if !youtube.store.hasClient { chooseYouTubeClient() }
         guard youtube.store.hasClient else { return }
         Task { await youtube.connect() }
+    }
+
+    /// Offer the file first, typing second.
+    ///
+    /// The console hands you a `client_secret_….json`; reading it beats making
+    /// someone find two fields among eight and retype them, and it keeps the
+    /// secret off the clipboard on the way past.
+    private func chooseYouTubeClient() {
+        let alert = NSAlert()
+        alert.messageText = "Connect YouTube"
+        alert.informativeText = """
+            Create an OAuth client at console.cloud.google.com → APIs & Services \
+            → Credentials → Create credentials → OAuth client ID → Desktop app, \
+            with the YouTube Data API v3 enabled. Then download its JSON and \
+            open it here.
+
+            Publish the consent screen rather than leaving it in Testing — a \
+            Testing app's sign-in expires every 7 days.
+
+            Used only to read which channels you're subscribed to. Stored in app \
+            preferences; revoke any time at myaccount.google.com/permissions.
+            """
+        alert.addButton(withTitle: "Choose JSON…")
+        alert.addButton(withTitle: "Type Instead…")
+        alert.addButton(withTitle: "Cancel")
+        NSApp.activate(ignoringOtherApps: true)
+
+        switch alert.runModal() {
+        case .alertFirstButtonReturn:  importYouTubeClientJSON()
+        case .alertSecondButtonReturn: promptForYouTubeClient()
+        default: return
+        }
+    }
+
+    private func importYouTubeClientJSON() {
+        let panel = NSOpenPanel()
+        panel.title = "Choose your OAuth client JSON"
+        panel.allowedContentTypes = [.json]
+        panel.allowsMultipleSelection = false
+        panel.directoryURL = FileManager.default.urls(for: .downloadsDirectory,
+                                                      in: .userDomainMask).first
+        NSApp.activate(ignoringOtherApps: true)
+        guard panel.runModal() == .OK, let url = panel.url else { return }
+
+        guard let data = try? Data(contentsOf: url),
+              let client = YouTubeAPI.decodeClientJSON(data) else {
+            // Name the actual problem. "Didn't work" sends someone back to the
+            // console to recreate a client that was never the issue.
+            let failed = NSAlert()
+            failed.messageText = "That file isn't an OAuth client"
+            failed.informativeText = """
+                Expected the JSON from Credentials → OAuth 2.0 Client IDs → \
+                download, which contains client_id and client_secret. An API \
+                key file won't work — "my subscriptions" needs OAuth.
+                """
+            failed.runModal()
+            return
+        }
+        youtube.store.storeClient(id: client.id, secret: client.secret)
     }
 
     /// Ask for the OAuth client once.

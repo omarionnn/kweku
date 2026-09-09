@@ -82,6 +82,20 @@ enum GitSyncTests {
             Check.ok(GitSync.direction(forCommand: "git fetch && git push") == .pull,
                      "one rim, one direction — and the fetch happens first")
         }
+        Check.run("lines taken verbatim from a real session read correctly") {
+            // Lifted out of this project's own Claude Code transcript, which is
+            // where these commands actually come from — the shapes a synthetic
+            // test tends not to think of.
+            Check.ok(GitSync.direction(
+                forCommand: "cd /tmp && rm -rf mra && git clone --depth 1 -q https://github.com/u/r.git mra")
+                == .pull, "flags between the subcommand and the URL")
+            Check.ok(GitSync.direction(
+                forCommand: "cd ~/Desktop/notch && git branch -a 2>&1 | head && echo done")
+                == nil, "branch is local, and the pipe must not confuse the scan")
+            Check.ok(GitSync.direction(
+                forCommand: "cd ~/Desktop/notch && echo \"=== STATUS ===\" && git status --short | head -30")
+                == nil, "status is local, quoted banner and all")
+        }
     }
 
     // MARK: End to end, through the wire format

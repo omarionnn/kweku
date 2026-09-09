@@ -1,4 +1,5 @@
 import AppKit
+import Combine
 
 /// Watches the channels you follow for new uploads.
 ///
@@ -29,9 +30,21 @@ public final class YouTubeHub: ObservableObject {
 
     private var timer: Timer?
     private var polling = false
+    private var storeChanges: AnyCancellable?
 
     public init(store: YouTubeStore? = nil) {
-        self.store = store ?? YouTubeStore()
+        let store = store ?? YouTubeStore()
+        self.store = store
+        // Republish the store's changes as our own.
+        //
+        // Views observe the hub, but the channel list lives on the store — a
+        // separate `ObservableObject`, whose changes do *not* travel up an
+        // enclosing one. Without this, adding a channel updates the model and
+        // the menu carries on showing the old list until something unrelated
+        // redraws it.
+        storeChanges = store.objectWillChange.sink { [weak self] _ in
+            self?.objectWillChange.send()
+        }
     }
 
     // MARK: - Lifecycle

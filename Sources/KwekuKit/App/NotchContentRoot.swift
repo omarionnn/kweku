@@ -656,53 +656,69 @@ struct NotchContentRoot: View {
     /// Following lives in the menu rather than a settings window because it is
     /// the only setting here you change while thinking about a *channel* —
     /// usually right after one of its notices, with the notch under the cursor.
+    /// Deliberately flat, like every other item in this menu.
+    ///
+    /// A nested `Menu` inside a `contextMenu` is unreliable on macOS — the
+    /// submenu flickers and swallows clicks, which is exactly what a menu must
+    /// never do. Nothing else in this file nests, and that was not an accident
+    /// worth overturning for a channel list.
     @ViewBuilder private var youtubeMenu: some View {
-        Menu("YouTube") {
-            Button(youtube.adding ? "Adding…" : "Add Channel…") { promptForYouTubeChannel() }
-                .disabled(youtube.adding)
-            if !youtube.store.channels.isEmpty {
-                Divider()
-                // The check is the notify switch, not a selection: everything
-                // here is followed, and unchecking silences one without
-                // forgetting it. Remove is on the same row, one level down,
-                // so the destructive act needs a deliberate second step.
-                ForEach(sortedChannels, id: \.id) { channel in
-                    Menu(channel.notifies ? "✓ \(channel.title)" : "  \(channel.title)") {
-                        Button(channel.notifies ? "Silence Notices" : "Notify Me") {
-                            youtube.setNotifies(!channel.notifies, for: channel.id)
-                        }
-                        Button("Open Channel") {
-                            guard let url = channel.channelURL else { return }
-                            NSWorkspace.shared.open(url)
-                        }
-                        Divider()
-                        Button("Stop Following", role: .destructive) {
-                            youtube.remove(channel.id)
-                        }
-                    }
-                }
-            }
-            // A drop is never requeued — the gate closing means you are already
-            // looking at the notch, and re-saying it would be talking over
-            // yourself. That is right for an agent, whose state the panel still
-            // holds, but a video announced while you were typing would
-            // otherwise be gone with no record anywhere. This is that record.
-            if !youtube.store.recent.isEmpty {
-                Divider()
-                Menu("Recent Uploads") {
-                    ForEach(youtube.store.recent.prefix(12), id: \.id) { upload in
-                        Button("\(upload.channelTitle) — \(upload.title)") {
-                            guard let url = upload.watchURL else { return }
-                            NSWorkspace.shared.open(url)
-                        }
-                    }
-                }
-            }
-            if let error = youtube.lastError {
-                Divider()
-                Button(error) {}.disabled(true)
+        Button(youtube.adding ? "Adding Channel…" : "Add YouTube Channel…") {
+            promptForYouTubeChannel()
+        }
+        .disabled(youtube.adding)
+
+        // The check is a quiet switch, not a selection: everything listed is
+        // followed, and unchecking silences one without forgetting it.
+        ForEach(sortedChannels, id: \.id) { channel in
+            Button(action: { youtube.setNotifies(!channel.notifies, for: channel.id) }) {
+                Label(channel.title, systemImage: channel.notifies ? "checkmark" : "")
             }
         }
+        if !youtube.store.channels.isEmpty {
+            Button("Stop Following a Channel…") { promptToRemoveYouTubeChannel() }
+        }
+        // A drop is never requeued — the gate closing means you are already
+        // looking at the notch, and re-saying it would be talking over
+        // yourself. That is right for an agent, whose state the panel still
+        // holds, but a video announced while you were typing would otherwise
+        // be gone with no record anywhere. This is that record.
+        ForEach(youtube.store.recent.prefix(5), id: \.id) { upload in
+            Button("▶ \(upload.channelTitle) — \(upload.title)") {
+                guard let url = upload.watchURL else { return }
+                NSWorkspace.shared.open(url)
+            }
+        }
+        if let error = youtube.lastError {
+            Button(error) {}.disabled(true)
+        }
+    }
+
+    /// Unfollowing, without a submenu to lose the click in.
+    ///
+    /// A pop-up inside an alert is a list the window server owns rather than
+    /// one SwiftUI has to keep alive under a moving cursor, so it behaves the
+    /// same every time.
+    private func promptToRemoveYouTubeChannel() {
+        let channels = sortedChannels
+        guard !channels.isEmpty else { return }
+
+        let alert = NSAlert()
+        alert.messageText = "Stop following a channel"
+        alert.informativeText = "Its uploads will no longer open the notch."
+        let picker = NSPopUpButton(frame: NSRect(x: 0, y: 0, width: 300, height: 25))
+        picker.addItems(withTitles: channels.map(\.title))
+        alert.accessoryView = picker
+        alert.addButton(withTitle: "Stop Following")
+        alert.addButton(withTitle: "Cancel")
+        NSApp.activate(ignoringOtherApps: true)
+        guard alert.runModal() == .alertFirstButtonReturn else { return }
+
+        let index = picker.indexOfSelectedItem
+        guard channels.indices.contains(index) else { return }
+        let channel = channels[index]
+        youtube.remove(channel.id)
+        showToast("Stopped following \(channel.title)")
     }
 
     private var sortedChannels: [YouTubeChannel] {

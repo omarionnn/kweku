@@ -53,7 +53,8 @@ struct StatsView: View, NookComponent {
 
     // MARK: - Collapsed
 
-    private var collapsedBand: some View {
+    /// Internal, not private: the dashboard shows this as its system row.
+    var collapsedBand: some View {
         HStack(spacing: 8) {
             Sparkline(values: stats.cpuHistory.normalized(), color: cpuColor)
                 .frame(width: 26, height: 12)
@@ -74,7 +75,8 @@ struct StatsView: View, NookComponent {
 
     // MARK: - Expanded
 
-    private var expandedPanel: some View {
+    /// Internal: an enlarged system row is this panel itself.
+    var expandedPanel: some View {
         VStack(spacing: 8) {
             HStack(spacing: 16) {
                 traceMeter(title: "CPU",

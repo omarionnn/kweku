@@ -49,6 +49,11 @@ public final class OverlayWindow: NSPanel {
         hidesOnDeactivate = false
         // Don't let AppKit decide on our behalf that a click "needs" key.
         becomesKeyOnlyIfNeeded = false
+        // Mouse-moved delivery is off by default, and SwiftUI's `.onHover` is
+        // how the dashboard knows which row the cursor is on. Without this
+        // every `onHover` in the notch is dead — the row enlargement, the
+        // button highlights, the prompt pill's own hover state.
+        acceptsMouseMovedEvents = true
     }
 
     // Borderless windows refuse key by default, and the overlay wants none of

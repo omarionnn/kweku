@@ -101,21 +101,21 @@ enum YouTubeTests {
             Check.ok(age(-60) == "just now", "a clock skew into the future doesn't go negative")
         }
 
-        Check.run("only starred, unseen and recent uploads are announced") {
+        Check.run("only unsilenced, unseen and recent uploads are announced") {
             let now = Date(timeIntervalSince1970: 2_000_000)
             func upload(_ id: String, _ channel: String, agoHours: Double) -> YouTubeUpload {
                 YouTubeUpload(id: id, channelId: channel, channelTitle: channel,
                               title: id, published: now - agoHours * 3600)
             }
             let uploads = [
-                upload("new", "UC-star", agoHours: 1),
-                upload("old", "UC-star", agoHours: 40),      // outside the window
-                upload("seen", "UC-star", agoHours: 2),      // already said
-                upload("other", "UC-plain", agoHours: 1),    // not starred
+                upload("new", "UC-loud", agoHours: 1),
+                upload("old", "UC-loud", agoHours: 40),      // outside the window
+                upload("seen", "UC-loud", agoHours: 2),      // already said
+                upload("other", "UC-quiet", agoHours: 1),    // silenced
             ]
             let out = YouTubeUploadPolicy.announceable(
-                uploads, seen: ["seen"], starred: ["UC-star"], now: now)
-            Check.ok(out.map(\.id) == ["new"], "only the new starred one — got \(out.map(\.id))")
+                uploads, seen: ["seen"], notifying: ["UC-loud"], now: now)
+            Check.ok(out.map(\.id) == ["new"], "only the new loud one — got \(out.map(\.id))")
         }
 
         Check.run("announcements come out oldest first") {
@@ -127,118 +127,68 @@ enum YouTubeTests {
                               published: now - 3600),
             ]
             let out = YouTubeUploadPolicy.announceable(
-                uploads, seen: [], starred: ["UC"], now: now)
+                uploads, seen: [], notifying: ["UC"], now: now)
             Check.ok(out.map(\.id) == ["a", "b"], "said in the order they landed")
         }
 
-        Check.run("subscriptions decode from resourceId, not the subscription id") {
-            let json = """
-            {"nextPageToken":"CDIQAA","items":[
-              {"id":"SUBSCRIPTION-ID-NOT-CHANNEL",
-               "snippet":{"title":"Veritasium",
-                          "resourceId":{"channelId":"UCHnyfMqiRRG1u-2MsSQLbXA"},
-                          "thumbnails":{"default":{"url":"https://yt3.ggpht.com/x=s88"}}}},
-              {"id":"another","snippet":{"title":"No resource id here"}}
-            ]}
+        Check.run("a channel added by hand speaks unless silenced") {
+            let channel = YouTubeChannel(id: "UC1", title: "Someone")
+            Check.ok(channel.notifies, "you added it on purpose, so it may speak")
+            Check.ok(channel.channelURL?.absoluteString
+                        == "https://www.youtube.com/channel/UC1", "channel URL")
+        }
+
+        // MARK: - Resolving what was pasted
+
+        Check.run("recognises a channel id") {
+            Check.ok(YouTubeChannelID.isChannelID("UCXuqSBlHAE6Xw-yeJA0Tunw"), "real id")
+            Check.ok(!YouTubeChannelID.isChannelID("UCtooshort"), "too short")
+            Check.ok(!YouTubeChannelID.isChannelID("XXXuqSBlHAE6Xw-yeJA0Tunw"), "wrong prefix")
+            Check.ok(!YouTubeChannelID.isChannelID("UCXuqSBlHAE6Xw yeJA0Tunw"), "space")
+        }
+
+        Check.run("pulls the id straight out when it's already there") {
+            let id = "UCXuqSBlHAE6Xw-yeJA0Tunw"
+            Check.ok(YouTubeChannelID.direct(from: id) == id, "bare id")
+            Check.ok(YouTubeChannelID.direct(from: "  \(id)\n") == id, "whitespace trimmed")
+            Check.ok(YouTubeChannelID.direct(
+                from: "https://www.youtube.com/channel/\(id)") == id, "channel URL")
+            Check.ok(YouTubeChannelID.direct(
+                from: "https://www.youtube.com/channel/\(id)/videos") == id, "with a subpath")
+            // A handle carries no id, so it must report that rather than
+            // guessing — the caller's next step is a network fetch.
+            Check.ok(YouTubeChannelID.direct(from: "https://www.youtube.com/@LinusTechTips") == nil,
+                     "a handle is not an id")
+            Check.ok(YouTubeChannelID.direct(from: "") == nil, "empty")
+        }
+
+        Check.run("digs the id out of a fetched page") {
+            let id = "UCXuqSBlHAE6Xw-yeJA0Tunw"
+            let rss = """
+            <html><head><link rel="alternate" type="application/rss+xml"
+            href="https://www.youtube.com/feeds/videos.xml?channel_id=\(id)"></head></html>
             """
-            guard let out = YouTubeAPI.decodeSubscriptions(Data(json.utf8)) else {
-                return Check.ok(false, "failed to decode")
-            }
-            Check.ok(out.channels.count == 1, "the malformed item is skipped")
-            Check.ok(out.channels.first?.id == "UCHnyfMqiRRG1u-2MsSQLbXA", "channel id")
-            Check.ok(out.channels.first?.title == "Veritasium", "title")
-            Check.ok(out.channels.first?.avatarURL != nil, "avatar")
-            Check.ok(out.channels.first?.starred == false, "nothing arrives starred")
-            Check.ok(out.nextPage == "CDIQAA", "page cursor")
-            Check.ok(YouTubeAPI.decodeSubscriptions(Data("{}".utf8)) == nil, "no items = nil")
+            Check.ok(YouTubeChannelID.inPage(rss) == id, "from the RSS link")
+            Check.ok(YouTubeChannelID.inPage(#"{"externalId":"\#(id)"}"#) == id, "from externalId")
+            Check.ok(YouTubeChannelID.inPage(#"{"channelId":"\#(id)"}"#) == id, "from channelId")
+
+            // A truncated marker early in the page must not lose a good match
+            // further down; these strings appear many times per page.
+            let messy = #"{"channelId":"UCtruncated"} … {"channelId":"\#(id)"}"#
+            Check.ok(YouTubeChannelID.inPage(messy) == id, "scans past a bad match")
+            Check.ok(YouTubeChannelID.inPage("<html>nothing here</html>") == nil, "no id")
         }
 
-        Check.run("subscriptions URL asks for mine, with a page cursor") {
-            let first = YouTubeAPI.subscriptionsURL().absoluteString
-            Check.ok(first.contains("mine=true"), "mine")
-            Check.ok(first.contains("part=snippet"), "part")
-            Check.ok(!first.contains("pageToken"), "no cursor on the first page")
-            Check.ok(YouTubeAPI.subscriptionsURL(pageToken: "CDIQAA")
-                .absoluteString.contains("pageToken=CDIQAA"), "cursor")
-        }
-
-        Check.run("token responses, including a refresh that omits the refresh token") {
-            let full = #"{"access_token":"ya29.a0","expires_in":3599,"refresh_token":"1//04x"}"#
-            let refreshed = #"{"access_token":"ya29.b1","expires_in":3599}"#
-            let token = YouTubeAPI.decodeToken(Data(full.utf8))
-            Check.ok(token?.access == "ya29.a0", "access")
-            Check.ok(token?.refresh == "1//04x", "refresh")
-            Check.eq(token?.expiresIn ?? 0, 3599, "lifetime")
-            Check.ok(YouTubeAPI.decodeToken(Data(refreshed.utf8))?.refresh == nil,
-                     "a refresh response has no refresh token — the old one stands")
-            Check.ok(YouTubeAPI.decodeToken(Data(#"{"error":"invalid_grant"}"#.utf8)) == nil,
-                     "an error is not a token")
-        }
-
-        Check.run("consent URL carries PKCE and asks for a refresh token") {
-            let url = YouTubeAPI.authorizationURL(
-                clientID: "cid", redirect: "http://127.0.0.1:49152",
-                challenge: "chal", state: "st")?.absoluteString ?? ""
-            Check.ok(url.contains("code_challenge=chal"), "challenge")
-            Check.ok(url.contains("code_challenge_method=S256"), "S256")
-            Check.ok(url.contains("access_type=offline"), "offline")
-            Check.ok(url.contains("prompt=consent"), "consent — without it, no refresh token")
-            Check.ok(url.contains("state=st"), "state")
-            Check.ok(url.contains("youtube.readonly"), "read-only scope")
-        }
-
-        Check.run("callback is read off the raw request line") {
-            let ok = YouTubeAPI.parseCallback(
-                requestLine: "GET /?code=4/0AX4&state=abc HTTP/1.1")
-            Check.ok(ok.code == "4/0AX4", "code, slash intact — got \(ok.code ?? "nil")")
-            Check.ok(ok.state == "abc", "state")
-            Check.ok(ok.error == nil, "no error")
-
-            let denied = YouTubeAPI.parseCallback(
-                requestLine: "GET /?error=access_denied&state=abc HTTP/1.1")
-            Check.ok(denied.error == "access_denied", "denial")
-            Check.ok(denied.code == nil, "no code")
-
-            let favicon = YouTubeAPI.parseCallback(requestLine: "GET /favicon.ico HTTP/1.1")
-            Check.ok(favicon.code == nil && favicon.error == nil, "unrelated request yields nothing")
-            Check.ok(YouTubeAPI.parseCallback(requestLine: "").code == nil, "empty line")
-        }
-
-        Check.run("reads the client out of the console's JSON download") {
-            let desktop = """
-            {"installed":{"client_id":"123.apps.googleusercontent.com",
-             "project_id":"kweku","auth_uri":"https://accounts.google.com/o/oauth2/auth",
-             "token_uri":"https://oauth2.googleapis.com/token",
-             "client_secret":"GOCSPX-abc","redirect_uris":["http://localhost"]}}
-            """
-            let client = YouTubeAPI.decodeClientJSON(Data(desktop.utf8))
-            Check.ok(client?.id == "123.apps.googleusercontent.com", "id")
-            Check.ok(client?.secret == "GOCSPX-abc", "secret")
-
-            let web = #"{"web":{"client_id":"w","client_secret":"s"}}"#
-            Check.ok(YouTubeAPI.decodeClientJSON(Data(web.utf8))?.id == "w",
-                     "a web client is accepted too")
-            let bare = #"{"client_id":"b","client_secret":"s"}"#
-            Check.ok(YouTubeAPI.decodeClientJSON(Data(bare.utf8))?.id == "b", "already unwrapped")
-
-            // An API key file is the likeliest wrong file to reach for, and it
-            // has to fail loudly rather than half-configuring the app.
-            Check.ok(YouTubeAPI.decodeClientJSON(Data(#"{"api_key":"AIza"}"#.utf8)) == nil,
-                     "an API key is not an OAuth client")
-            Check.ok(YouTubeAPI.decodeClientJSON(
-                Data(#"{"installed":{"client_id":"x"}}"#.utf8)) == nil, "id without secret")
-            Check.ok(YouTubeAPI.decodeClientJSON(
-                Data(#"{"installed":{"client_id":"","client_secret":"s"}}"#.utf8)) == nil,
-                     "empty id is not a client")
-            Check.ok(YouTubeAPI.decodeClientJSON(Data("not json".utf8)) == nil, "garbage")
-        }
-
-        Check.run("form bodies escape what Google rejects unescaped") {
-            let body = String(decoding: YouTubeAPI.form(["code": "4/0AX4+a=b", "id": "x y"]),
-                              as: UTF8.self)
-            Check.ok(body.contains("4%2F0AX4%2Ba%3Db"), "slash, plus and equals — got \(body)")
-            Check.ok(body.contains("x%20y"), "space")
-            Check.ok(!body.contains("+a"), "no raw plus, which would decode as a space")
+        Check.run("decides which page to ask for a name") {
+            func page(_ input: String) -> String { YouTubeChannelID.pageURL(for: input)?.absoluteString ?? "" }
+            Check.ok(page("@LinusTechTips") == "https://www.youtube.com/@LinusTechTips", "handle")
+            Check.ok(page("LinusTechTips") == "https://www.youtube.com/@LinusTechTips",
+                     "a bare word is treated as a handle")
+            Check.ok(page("https://www.youtube.com/c/LinusTechTips")
+                        == "https://www.youtube.com/c/LinusTechTips", "vanity URL passes through")
+            Check.ok(page("https://www.youtube.com/watch?v=abc")
+                        == "https://www.youtube.com/watch?v=abc", "a video link is fine too")
+            Check.ok(YouTubeChannelID.pageURL(for: "   ") == nil, "blank")
         }
     }
 }

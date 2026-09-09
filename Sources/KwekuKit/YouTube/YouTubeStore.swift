@@ -1,31 +1,23 @@
 import Foundation
 
-/// Everything about YouTube that has to survive a relaunch.
+/// The channels you follow, and what has already been said about them.
 ///
-/// Preferences rather than the keychain, matching how the Gemini key is
-/// already held: this app is an ad-hoc-signed dylib loaded by a frozen host,
-/// and the standing rule on this machine is that nothing may depend on a
-/// keychain write or an authorisation prompt to work.
+/// No credentials live here any more. Following a channel by id needs no
+/// account, no consent screen and nothing that expires — the only state worth
+/// keeping is which channels you named, which uploads have been announced, and
+/// the handful worth showing when you open the notch.
 @MainActor
 public final class YouTubeStore: ObservableObject {
 
-    /// Every subscription, starred or not. The unstarred ones are still worth
-    /// keeping: they are the list you pick from, and re-syncing to offer that
-    /// list would cost a round trip every time the menu opens.
+    /// Channels you added, in the order you added them.
     @Published public private(set) var channels: [YouTubeChannel] = []
-    @Published public private(set) var lastSyncedAt: Date?
-    /// The most recent uploads seen across starred channels, newest first —
-    /// what the panel shows when you open the notch on it.
+    /// The most recent uploads across those channels, newest first.
     @Published public private(set) var recent: [YouTubeUpload] = []
 
     private enum Key {
-        static let clientID = "youtubeClientID"
-        static let clientSecret = "youtubeClientSecret"
-        static let refreshToken = "youtubeRefreshToken"
         static let channels = "youtubeChannels"
         static let seen = "youtubeSeenVideoIDs"
         static let recent = "youtubeRecentUploads"
-        static let lastSync = "youtubeLastSyncedAt"
         static let primed = "youtubePrimedChannels"
     }
 
@@ -33,10 +25,9 @@ public final class YouTubeStore: ObservableObject {
     ///
     /// The dedupe set only has to outlive the feed window: a channel's Atom
     /// feed carries ~15 entries, so an id can only reappear while it is still
-    /// in that window. A few hundred covers a large starred list many times
-    /// over, and the cap stops preferences growing without bound for years.
+    /// in that window. A few hundred covers a large list many times over, and
+    /// the cap stops preferences growing without bound for years.
     private static let seenLimit = 600
-    /// How many uploads the panel keeps.
     private static let recentLimit = 40
 
     private let defaults: UserDefaults
@@ -54,79 +45,53 @@ public final class YouTubeStore: ObservableObject {
         seenOrder = defaults.stringArray(forKey: Key.seen) ?? []
         seenIDs = Set(seenOrder)
         primedIDs = Set(defaults.stringArray(forKey: Key.primed) ?? [])
-        lastSyncedAt = defaults.object(forKey: Key.lastSync) as? Date
-    }
-
-    // MARK: - Credentials
-
-    /// The OAuth client from your Google Cloud project. Not a secret in the
-    /// usual sense — RFC 8252 is explicit that an installed app cannot keep
-    /// one — which is why PKCE carries the actual protection.
-    public var clientID: String? { nonEmpty(Key.clientID) }
-    public var clientSecret: String? { nonEmpty(Key.clientSecret) }
-
-    public var refreshToken: String? {
-        get { nonEmpty(Key.refreshToken) }
-        set { defaults.set(newValue, forKey: Key.refreshToken) }
-    }
-
-    public var hasClient: Bool { clientID != nil && clientSecret != nil }
-
-    public func storeClient(id: String, secret: String) {
-        defaults.set(id, forKey: Key.clientID)
-        defaults.set(secret, forKey: Key.clientSecret)
-    }
-
-    /// Forget the connection entirely, credentials included.
-    public func forgetEverything() {
-        for key in [Key.clientID, Key.clientSecret, Key.refreshToken, Key.channels,
-                    Key.seen, Key.recent, Key.lastSync, Key.primed] {
-            defaults.removeObject(forKey: key)
-        }
-        channels = []; recent = []
-        seenIDs = []; seenOrder = []
-        primedIDs = []
-        lastSyncedAt = nil
     }
 
     // MARK: - Channels
 
-    /// Replace the subscription list with a freshly synced one.
-    ///
-    /// Stars are carried across by id, never taken from the incoming list —
-    /// the API has no idea which channels you starred, so a naive overwrite
-    /// would silently un-star everything on the next daily sync.
-    public func merge(synced: [YouTubeChannel]) {
-        let stars = Set(channels.filter(\.starred).map(\.id))
-        channels = synced.map { channel in
-            var copy = channel
-            copy.starred = stars.contains(channel.id)
-            return copy
+    public var isEmpty: Bool { channels.isEmpty }
+    /// Channels currently allowed to open the notch.
+    public var notifyingIDs: Set<String> { Set(channels.filter(\.notifies).map(\.id)) }
+
+    public func contains(_ channelID: String) -> Bool {
+        channels.contains { $0.id == channelID }
+    }
+
+    /// Add a channel, or update the title of one already followed.
+    @discardableResult
+    public func add(_ channel: YouTubeChannel) -> Bool {
+        if let index = channels.firstIndex(where: { $0.id == channel.id }) {
+            // Re-adding is how you'd fix a channel that was named before it
+            // had a title; it must not silently reset the notify switch.
+            channels[index].title = channel.title
+            persistChannels()
+            return false
         }
-        lastSyncedAt = Date()
-        defaults.set(lastSyncedAt, forKey: Key.lastSync)
+        channels.append(channel)
+        persistChannels()
+        return true
+    }
+
+    public func remove(_ channelID: String) {
+        channels.removeAll { $0.id == channelID }
+        primedIDs.remove(channelID)
+        defaults.set(Array(primedIDs), forKey: Key.primed)
         persistChannels()
     }
 
-    public func setStarred(_ starred: Bool, for channelID: String) {
+    /// The per-channel quiet switch, for someone who posts five times a day
+    /// and whom you'd rather read in the panel than be told about.
+    public func setNotifies(_ notifies: Bool, for channelID: String) {
         guard let index = channels.firstIndex(where: { $0.id == channelID }) else { return }
-        channels[index].starred = starred
+        channels[index].notifies = notifies
         persistChannels()
     }
-
-    public var starredChannels: [YouTubeChannel] { channels.filter(\.starred) }
-    public var starredIDs: Set<String> { Set(starredChannels.map(\.id)) }
 
     // MARK: - Seen uploads
 
     public var seen: Set<String> { seenIDs }
 
     /// Record ids as already said, so they are never announced again.
-    ///
-    /// Also the first-poll suppressor: a newly starred channel has its whole
-    /// current feed marked seen without announcing any of it, which is why
-    /// starring someone doesn't immediately cost you fifteen notices about
-    /// videos from last month.
     public func markSeen(_ ids: [String]) {
         for id in ids where !seenIDs.contains(id) {
             seenIDs.insert(id)
@@ -144,8 +109,8 @@ public final class YouTubeStore: ObservableObject {
     ///
     /// The first read of a channel is a backlog, not news — the feed hands
     /// back its last ~15 uploads whenever you ask. So the first poll after
-    /// starring someone is swallowed whole, and only what lands *afterwards*
-    /// is worth opening the notch for.
+    /// adding someone is swallowed whole, and only what lands *afterwards* is
+    /// worth opening the notch for.
     public func isPrimed(_ channelID: String) -> Bool { primedIDs.contains(channelID) }
 
     public func markPrimed(_ channelID: String) {
@@ -168,6 +133,16 @@ public final class YouTubeStore: ObservableObject {
         }
     }
 
+    /// Forget every channel and everything said about them.
+    public func forgetEverything() {
+        for key in [Key.channels, Key.seen, Key.recent, Key.primed] {
+            defaults.removeObject(forKey: key)
+        }
+        channels = []; recent = []
+        seenIDs = []; seenOrder = []
+        primedIDs = []
+    }
+
     // MARK: - Plumbing
 
     private func persistChannels() {
@@ -179,10 +154,5 @@ public final class YouTubeStore: ObservableObject {
     private func decode<T: Decodable>(_ type: T.Type, _ key: String) -> T? {
         guard let data = defaults.data(forKey: key) else { return nil }
         return try? JSONDecoder().decode(type, from: data)
-    }
-
-    private func nonEmpty(_ key: String) -> String? {
-        let value = defaults.string(forKey: key)
-        return (value?.isEmpty == false) ? value : nil
     }
 }

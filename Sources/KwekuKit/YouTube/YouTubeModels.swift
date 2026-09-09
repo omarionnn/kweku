@@ -1,25 +1,22 @@
 import Foundation
 
-/// A channel the subscription sync found.
+/// A channel you asked to follow.
 ///
-/// Every subscription is stored; only the *starred* ones are allowed to open
-/// the notch. A sub list is a record of what you once clicked, sometimes years
-/// ago — treating all of it as "interrupt me" would turn a two-second notice
-/// into a full-time job. Starring is the line between "I follow this" and "tell
-/// me the moment this lands".
+/// Named by hand rather than read off your Google account: every channel here
+/// is one you deliberately added, so the default is that it may speak.
+/// `notifies` is the quiet switch for the one who posts five times a day and
+/// whom you'd rather read in the panel than be told about.
 public struct YouTubeChannel: Codable, Equatable, Identifiable, Sendable {
     /// The `UC…` channel id. Stable, and the only thing the Atom feed needs.
     public var id: String
     public var title: String
-    public var avatarURL: URL?
     /// May this channel open the notch?
-    public var starred: Bool
+    public var notifies: Bool
 
-    public init(id: String, title: String, avatarURL: URL? = nil, starred: Bool = false) {
+    public init(id: String, title: String, notifies: Bool = true) {
         self.id = id
         self.title = title
-        self.avatarURL = avatarURL
-        self.starred = starred
+        self.notifies = notifies
     }
 
     public var channelURL: URL? { URL(string: "https://www.youtube.com/channel/\(id)") }
@@ -85,16 +82,16 @@ public enum YouTubeUploadPolicy {
     /// panel, not over your work.
     public static let maxAge: TimeInterval = 12 * 3600
 
-    /// Uploads to announce: from a starred channel, not already said, recent.
+    /// Uploads to announce: from a channel that may speak, unsaid, and recent.
     ///
     /// Returned oldest-first so the queue says them in the order they landed.
     public static func announceable(_ uploads: [YouTubeUpload],
                                     seen: Set<String>,
-                                    starred: Set<String>,
+                                    notifying: Set<String>,
                                     now: Date = Date(),
                                     maxAge: TimeInterval = maxAge) -> [YouTubeUpload] {
         uploads
-            .filter { starred.contains($0.channelId) }
+            .filter { notifying.contains($0.channelId) }
             .filter { !seen.contains($0.id) }
             .filter { now.timeIntervalSince($0.published) <= maxAge }
             .sorted { $0.published < $1.published }

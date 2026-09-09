@@ -1,6 +1,5 @@
 import SwiftUI
 import AppKit
-import UniformTypeIdentifiers
 
 
 /// Top-level content injected into the notch window. Owns the creature, shelf,
@@ -654,22 +653,32 @@ struct NotchContentRoot: View {
 
     // MARK: - YouTube
 
-    /// Starring lives in the menu rather than a settings window because it is
-    /// the only setting here that you change while thinking about a *channel* —
+    /// Following lives in the menu rather than a settings window because it is
+    /// the only setting here you change while thinking about a *channel* —
     /// usually right after one of its notices, with the notch under the cursor.
     @ViewBuilder private var youtubeMenu: some View {
-        if youtube.isConnected {
-            let starred = youtube.store.starredChannels.count
-            Menu("YouTube Channels (\(starred) starred)") {
-                if youtube.store.channels.isEmpty {
-                    Button("No subscriptions synced yet") {}.disabled(true)
-                }
-                // Starred first, then alphabetical: the list you maintain sits
-                // at the top instead of scattered through everything you have
-                // ever subscribed to.
+        Menu("YouTube") {
+            Button(youtube.adding ? "Adding…" : "Add Channel…") { promptForYouTubeChannel() }
+                .disabled(youtube.adding)
+            if !youtube.store.channels.isEmpty {
+                Divider()
+                // The check is the notify switch, not a selection: everything
+                // here is followed, and unchecking silences one without
+                // forgetting it. Remove is on the same row, one level down,
+                // so the destructive act needs a deliberate second step.
                 ForEach(sortedChannels, id: \.id) { channel in
-                    Button(action: { youtube.setStarred(!channel.starred, for: channel.id) }) {
-                        Label(channel.title, systemImage: channel.starred ? "checkmark" : "")
+                    Menu(channel.notifies ? "✓ \(channel.title)" : "  \(channel.title)") {
+                        Button(channel.notifies ? "Silence Notices" : "Notify Me") {
+                            youtube.setNotifies(!channel.notifies, for: channel.id)
+                        }
+                        Button("Open Channel") {
+                            guard let url = channel.channelURL else { return }
+                            NSWorkspace.shared.open(url)
+                        }
+                        Divider()
+                        Button("Stop Following", role: .destructive) {
+                            youtube.remove(channel.id)
+                        }
                     }
                 }
             }
@@ -679,6 +688,7 @@ struct NotchContentRoot: View {
             // holds, but a video announced while you were typing would
             // otherwise be gone with no record anywhere. This is that record.
             if !youtube.store.recent.isEmpty {
+                Divider()
                 Menu("Recent Uploads") {
                     ForEach(youtube.store.recent.prefix(12), id: \.id) { upload in
                         Button("\(upload.channelTitle) — \(upload.title)") {
@@ -688,124 +698,54 @@ struct NotchContentRoot: View {
                     }
                 }
             }
-            Button("Sync Subscriptions Now") { Task { await youtube.syncSubscriptions() } }
-            Button("Disconnect YouTube", role: .destructive) { youtube.disconnect() }
-        } else {
-            Button("Connect YouTube…") { connectYouTube() }
-        }
-        if let error = youtube.lastError {
-            Button("YouTube: \(error)") {}.disabled(true)
+            if let error = youtube.lastError {
+                Divider()
+                Button(error) {}.disabled(true)
+            }
         }
     }
 
     private var sortedChannels: [YouTubeChannel] {
         youtube.store.channels.sorted {
-            $0.starred == $1.starred
-                ? $0.title.localizedCaseInsensitiveCompare($1.title) == .orderedAscending
-                : $0.starred
+            $0.title.localizedCaseInsensitiveCompare($1.title) == .orderedAscending
         }
     }
 
-    private func connectYouTube() {
-        if !youtube.store.hasClient { chooseYouTubeClient() }
-        guard youtube.store.hasClient else { return }
-        Task { await youtube.connect() }
-    }
-
-    /// Offer the file first, typing second.
+    /// Ask for a channel, in whatever form is on the clipboard.
     ///
-    /// The console hands you a `client_secret_….json`; reading it beats making
-    /// someone find two fields among eight and retype them, and it keeps the
-    /// secret off the clipboard on the way past.
-    private func chooseYouTubeClient() {
+    /// No account, no consent screen, no key. A channel id is public and its
+    /// uploads are a public feed, so the only thing needed is which channel —
+    /// and every form you can copy out of a browser is accepted.
+    private func promptForYouTubeChannel() {
         let alert = NSAlert()
-        alert.messageText = "Connect YouTube"
+        alert.messageText = "Follow a YouTube channel"
         alert.informativeText = """
-            Create an OAuth client at console.cloud.google.com → APIs & Services \
-            → Credentials → Create credentials → OAuth client ID → Desktop app, \
-            with the YouTube Data API v3 enabled. Then download its JSON and \
-            open it here.
+            Paste a channel link, an @handle, or a link to one of its videos.             Kweku will tell you when it uploads.
 
-            Publish the consent screen rather than leaving it in Testing — a \
-            Testing app's sign-in expires every 7 days.
-
-            Used only to read which channels you're subscribed to. Stored in app \
-            preferences; revoke any time at myaccount.google.com/permissions.
+            No sign-in and no API key — uploads come from the channel's public             feed.
             """
-        alert.addButton(withTitle: "Choose JSON…")
-        alert.addButton(withTitle: "Type Instead…")
-        alert.addButton(withTitle: "Cancel")
-        NSApp.activate(ignoringOtherApps: true)
-
-        switch alert.runModal() {
-        case .alertFirstButtonReturn:  importYouTubeClientJSON()
-        case .alertSecondButtonReturn: promptForYouTubeClient()
-        default: return
-        }
-    }
-
-    private func importYouTubeClientJSON() {
-        let panel = NSOpenPanel()
-        panel.title = "Choose your OAuth client JSON"
-        panel.allowedContentTypes = [.json]
-        panel.allowsMultipleSelection = false
-        panel.directoryURL = FileManager.default.urls(for: .downloadsDirectory,
-                                                      in: .userDomainMask).first
-        NSApp.activate(ignoringOtherApps: true)
-        guard panel.runModal() == .OK, let url = panel.url else { return }
-
-        guard let data = try? Data(contentsOf: url),
-              let client = YouTubeAPI.decodeClientJSON(data) else {
-            // Name the actual problem. "Didn't work" sends someone back to the
-            // console to recreate a client that was never the issue.
-            let failed = NSAlert()
-            failed.messageText = "That file isn't an OAuth client"
-            failed.informativeText = """
-                Expected the JSON from Credentials → OAuth 2.0 Client IDs → \
-                download, which contains client_id and client_secret. An API \
-                key file won't work — "my subscriptions" needs OAuth.
-                """
-            failed.runModal()
-            return
-        }
-        youtube.store.storeClient(id: client.id, secret: client.secret)
-    }
-
-    /// Ask for the OAuth client once.
-    ///
-    /// There is no way around this: "my subscriptions" is private user data,
-    /// so Google requires an OAuth client, and it will not issue one to an app
-    /// it hasn't met. The client id and secret are not really secrets for an
-    /// installed app — RFC 8252 says as much, which is why the flow uses PKCE
-    /// — but they are still yours, and they stay on this machine.
-    private func promptForYouTubeClient() {
-        let alert = NSAlert()
-        alert.messageText = "Connect YouTube"
-        alert.informativeText = """
-            Create an OAuth client at console.cloud.google.com → APIs & Services \
-            → Credentials → Create credentials → OAuth client ID → Desktop app, \
-            with the YouTube Data API v3 enabled. Paste its ID and secret below.
-
-            Used only to read which channels you're subscribed to. Stored in app \
-            preferences; revoke any time at myaccount.google.com/permissions.
-            """
-        let container = NSView(frame: NSRect(x: 0, y: 0, width: 320, height: 54))
-        let idField = EditableTextField(frame: NSRect(x: 0, y: 30, width: 320, height: 24))
-        idField.placeholderString = "Client ID (…apps.googleusercontent.com)"
-        let secretField = EditableSecureTextField(frame: NSRect(x: 0, y: 0, width: 320, height: 24))
-        secretField.placeholderString = "Client secret (GOCSPX-…)"
-        container.addSubview(idField)
-        container.addSubview(secretField)
-        alert.accessoryView = container
-        alert.addButton(withTitle: "Continue")
+        let field = EditableTextField(frame: NSRect(x: 0, y: 0, width: 320, height: 24))
+        field.placeholderString = "youtube.com/@handle"
+        alert.accessoryView = field
+        alert.addButton(withTitle: "Follow")
         alert.addButton(withTitle: "Cancel")
         NSApp.activate(ignoringOtherApps: true)
         guard alert.runModal() == .alertFirstButtonReturn else { return }
-        let id = idField.stringValue.trimmingCharacters(in: .whitespaces)
-        let secret = secretField.stringValue.trimmingCharacters(in: .whitespaces)
-        guard !id.isEmpty, !secret.isEmpty else { return }
-        youtube.store.storeClient(id: id, secret: secret)
+        let input = field.stringValue.trimmingCharacters(in: .whitespaces)
+        guard !input.isEmpty else { return }
+
+        Task {
+            // Name the channel that was added rather than saying "done" —
+            // pasting a handle and being told only that it worked leaves you
+            // unsure you got the right one.
+            if let title = await youtube.addChannel(from: input) {
+                showToast("Following \(title)")
+            } else {
+                showToast(youtube.lastError ?? "Couldn't follow that channel")
+            }
+        }
     }
+
 
     /// A drop with somewhere to go. Clicking a video opens the video — the
     /// notch behind it has nothing more to say about it than the line did.

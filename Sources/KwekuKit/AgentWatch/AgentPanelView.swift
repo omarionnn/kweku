@@ -346,6 +346,7 @@ struct AgentPanelView: View {
             switch session.activity {
             case .tooling:       return NotchRim.amber
             case .responding:    return NotchRim.teal
+            case .pushing, .pulling: return NotchRim.wire
             case .thinking, nil: return NotchRim.violet
             }
         }

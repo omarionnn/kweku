@@ -139,6 +139,11 @@ struct NotchRim: View {
     private let cometTail: CGFloat = 0.22
     /// Laps per second while a tool runs.
     private let cometRate: Double = 0.8
+    /// Fraction of the outline the transfer comet's tail covers, and its rate.
+    /// Shorter and quicker than the tool comet: a transfer is the more urgent
+    /// of the two, and the shorter tail keeps its direction legible.
+    private let syncTail: CGFloat = 0.18
+    private let syncRate: Double = 1.15
 
     @State private var breathe = false
     @State private var pulse = false
@@ -218,6 +223,7 @@ struct NotchRim: View {
             case .thinking:   return violet
             case .tooling:    return amber
             case .responding: return teal
+            case .pushing, .pulling: return wire
             }
         }
     }
@@ -265,7 +271,36 @@ struct NotchRim: View {
         case .thinking:   auroraRim
         case .tooling:    cometRim
         case .responding: tideRim
+        case .pushing:    syncRim(outbound: true)
+        case .pulling:    syncRim(outbound: false)
         }
+    }
+
+    /// **Talking to a remote.** The tool comet's shape in a colour nothing else
+    /// wears, running the way the bytes are going: clockwise off the notch
+    /// while pushing, anticlockwise back into it while fetching. Faster than
+    /// the tool comet, because a transfer should look like a transfer.
+    ///
+    /// Not a filled progress arc, deliberately. A push on this repo is ~1.2s
+    /// and a fetch ~2.1s, and nearly all of that is handshake and ref
+    /// negotiation rather than bytes — a fraction would sit at zero and then
+    /// jump, which is precisely the pretending `NotchRimStyle.progress` says it
+    /// will not do.
+    private func syncRim(outbound: Bool) -> some View {
+        TimelineView(.animation(minimumInterval: 1.0 / 30.0)) { context in
+            let travelled = context.date.timeIntervalSinceReferenceDate * syncRate
+            let head = CGFloat((outbound ? travelled : -travelled)
+                .truncatingRemainder(dividingBy: 1))
+            ZStack {
+                shape.stroke(Self.wire.opacity(0.13), lineWidth: 1.0).blur(radius: 2)
+                shape.stroke(Self.wire.opacity(0.07), lineWidth: 6).blur(radius: 8)
+                // The tail always follows the head, so it flips with direction.
+                trail(head: head, length: syncTail, colour: Self.wire,
+                      core: Self.wireCore, width: 2.4, blur: 2.0,
+                      backwards: !outbound)
+            }
+        }
+        .transition(.opacity)
     }
 
     /// **Thinking.** Two soft bands drift around the outline at different
@@ -342,21 +377,24 @@ struct NotchRim: View {
     /// A comet tail along the outline: nested trims of decreasing length and
     /// rising brightness, standing in for the gradient-along-a-path SwiftUI
     /// won't stroke. Cheap, and much softer than a two-piece stroke.
+    /// `backwards` puts the tail *ahead* of the head in path order, which is
+    /// what a comet running anticlockwise needs — otherwise the tail leads.
     private func trail(head: CGFloat, length: CGFloat, colour: Color,
                        core: Color? = nil, width: CGFloat, blur: CGFloat,
-                       steps: Int = 4) -> some View {
+                       steps: Int = 4, backwards: Bool = false) -> some View {
         ZStack {
             ForEach(0..<steps, id: \.self) { i in
                 // 0 = the full faint tail … 1 = the short bright head.
                 let t = CGFloat(i) / CGFloat(steps)
                 let len = length * (1 - t)
-                arc(from: head - len, length: len,
+                arc(from: backwards ? head : head - len, length: len,
                     color: colour.opacity(0.14 + 0.26 * Double(t)),
                     width: width * (0.55 + 0.45 * t),
                     blur: blur * (1 - 0.5 * t))
             }
             if let core {
-                arc(from: head - length * 0.05, length: length * 0.05,
+                let sliver = length * 0.05
+                arc(from: backwards ? head : head - sliver, length: sliver,
                     color: core, width: width * 1.05, blur: blur * 0.35)
             }
         }
@@ -429,4 +467,9 @@ struct NotchRim: View {
     /// Answering: the words are on their way out.
     static let teal = Color(red: 0.24, green: 0.82, blue: 0.80)
     static let mint = Color(red: 0.60, green: 0.99, blue: 0.80)
+    /// Talking to a remote. The one green in the set, so a transfer is never
+    /// mistaken for a tool call, a thought, or an answer — the hues either side
+    /// of it are already spoken for by teal and amber.
+    static let wire = Color(red: 0.30, green: 0.85, blue: 0.45)
+    static let wireCore = Color(red: 0.86, green: 1.0, blue: 0.90)
 }

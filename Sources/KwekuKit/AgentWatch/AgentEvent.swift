@@ -15,16 +15,28 @@ public enum AgentActivity: String, Codable, Sendable, CaseIterable {
     case thinking     // model is reasoning; nothing else in flight
     case tooling      // a tool call is executing
     case responding   // streaming an answer back
+    case pushing      // a git command is sending to a remote
+    case pulling      // a git command is fetching from one
 
     /// Which activity wins when several sessions are working at once. The
     /// concrete, finite thing outranks the open-ended one: a tool call has a
     /// beginning and an end worth watching; thinking just continues.
+    ///
+    /// The two network phases outrank a plain tool call for the same reason a
+    /// tool call outranks thinking — they are narrower and they leave the
+    /// machine. Relative order among the original three is unchanged.
     public var rank: Int {
         switch self {
-        case .tooling:    return 0
-        case .responding: return 1
-        case .thinking:   return 2
+        case .pushing, .pulling: return 0
+        case .tooling:    return 1
+        case .responding: return 2
+        case .thinking:   return 3
         }
+    }
+
+    /// The activity a git direction reads as.
+    public static func from(_ direction: GitSync.Direction) -> AgentActivity {
+        direction == .push ? .pushing : .pulling
     }
 
     /// Best guess at an activity from an OpenClaw gateway status phase. The
@@ -80,6 +92,17 @@ public struct AgentEvent: Equatable, Sendable {
         self.transcriptPath = transcriptPath
     }
 
+    /// The shell command a `Bash`-shaped tool call is about to run.
+    ///
+    /// Claude Code nests it under `tool_input`; the native format may send it
+    /// flat. Both are read, and anything else is simply absent — a payload
+    /// without a command just falls back to the generic tool comet.
+    static func shellCommand(_ obj: [String: Any]) -> String? {
+        let raw = (obj["tool_input"] as? [String: Any])?["command"] as? String
+            ?? obj["command"] as? String
+        return raw.flatMap { $0.isEmpty ? nil : $0 }
+    }
+
     /// Parse one JSON line in either wire format. Returns nil on garbage.
     public static func parse(_ line: String) -> AgentEvent? {
         guard let data = line.data(using: .utf8),
@@ -123,7 +146,15 @@ public struct AgentEvent: Equatable, Sendable {
                 return AgentEvent(sessionID: id, cwd: cwd, pid: pid, state: .idle, source: "claude",
                                   transcriptPath: transcript)
             case "UserPromptSubmit": return working(.thinking)
-            case "PreToolUse":       return working(.tooling, tool: tool)
+            // A shell command that talks to a remote is still a tool call, but
+            // it is the one worth naming: `tool_input.command` is already in
+            // the payload, so recognising it costs nothing and the rim can say
+            // "pushing" instead of "running something".
+            case "PreToolUse":
+                if let direction = shellCommand(obj).flatMap(GitSync.direction(forCommand:)) {
+                    return working(.from(direction))
+                }
+                return working(.tooling, tool: tool)
             // The tool has returned and the model is reading its output —
             // back to reasoning until the next tool or the Stop.
             case "PostToolUse":      return working(.thinking)

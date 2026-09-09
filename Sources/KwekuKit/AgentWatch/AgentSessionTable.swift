@@ -44,6 +44,8 @@ public struct AgentSession: Equatable, Sendable {
         case .tooling:    return tool ?? "running a tool"
         case .thinking:   return "thinking"
         case .responding: return "answering"
+        case .pushing:    return "pushing"
+        case .pulling:    return "fetching"
         case nil:         return nil
         }
     }
